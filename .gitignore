@@ -16,6 +16,7 @@ cntell_env
 *.p
 src/learnableOSG/h5
 *exp.ipynb 
-
+*.mp4
+*.mov
 
 
