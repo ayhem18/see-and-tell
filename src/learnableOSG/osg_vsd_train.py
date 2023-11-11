@@ -4,6 +4,7 @@ import numpy as np
 np.set_printoptions(linewidth=300)
 import osg_vsd_dataset
 import OptimalSequentialGrouping
+import os
 
 
 def CLossTest(data_folder_path='h5/', modality='visual', num_iters=101, stop_param=0.75):
@@ -17,7 +18,7 @@ def CLossTest(data_folder_path='h5/', modality='visual', num_iters=101, stop_par
         dist_type = 'EMBEDDING'
         feature_sizes = [d, 3000, 3000, 1000, 100]
         learning_rate = 0.005
-        weight_decay = 0  # 1e-2
+        weight_decay = 1e-2
     elif modality=='audio':
         path_to_h5 = data_folder_path+'h5_audio/'
         d, K_max = 128, 5
@@ -84,6 +85,9 @@ def CLossTest(data_folder_path='h5/', modality='visual', num_iters=101, stop_par
             break
 
     print('finished')
+    # save the model's weights locally: 
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    torch.save(OSG_model.state_dict(), os.path.join(dir_path, 'weights.pt'))
 
 if __name__ == "__main__":
     CLossTest(num_iters=5)

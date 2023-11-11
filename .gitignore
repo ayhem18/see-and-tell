@@ -14,5 +14,8 @@ cntell_env
 *debug.py
 *.jpg
 *.p
+src/learnableOSG/h5
+*exp.ipynb 
+
 
 
