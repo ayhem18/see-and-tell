@@ -95,10 +95,14 @@ def copy_directories(src_dir: str,
     # iterate through each file in the src_dir
     for file_name in os.listdir(src_dir):
         file_path = os.path.join(src_dir, file_name)
+        
         # move / copy
-        if filter_directories(file_name):
+        if filter_directories(file_name):                
             if copy:
-                shutil.copy(file_path, des_dir)
+                if os.path.isdir(file_path):
+                    shutil.copytree(file_path, os.path.join(des_dir, file_name))
+                else:                    
+                    shutil.copy(file_path, des_dir)
             else:
                 shutil.move(file_path, des_dir)
 
