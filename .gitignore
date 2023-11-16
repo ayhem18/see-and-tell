@@ -20,4 +20,8 @@ src/learnableOSG/h5
 *.mov
 *.pt
 LightGlue
-
+*places365*
+*patch*
+src/scene/classifier/wideresnet.py
+src/scene/autoencoders/building_blocks.py
+src/scene/autoencoders/my_code.py
