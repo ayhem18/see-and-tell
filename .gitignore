@@ -8,7 +8,6 @@ dataset
 *.pickle
 *.zip
 src/captions_old
-*.ipynb
 *.idea
 cntell_env
 *debug.py
@@ -22,6 +21,10 @@ src/learnableOSG/h5
 LightGlue
 *places365*
 *patch*
-src/scene/classifier/wideresnet.py
 src/scene/autoencoders/building_blocks.py
 src/scene/autoencoders/my_code.py
+.gitignore
+src/scene/autoencoders/runs
+*wideresnet.py*
+*exp*
+src/scene/autoencoders/autoencoders.ipynb

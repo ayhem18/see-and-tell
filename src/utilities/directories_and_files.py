@@ -3,13 +3,27 @@ This scripts contains functionalities to manipulate files and directories
 """
 import os
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Iterable
 import zipfile
 import shutil
 from datetime import datetime
 import re
 
 HOME = os.getcwd()
+
+
+_default_image_extensions = ['.png', '.jpg', 'jpeg']
+
+
+def all_images(path, image_extensions: Iterable[str]=None):
+    image_extensions = _default_image_extensions if image_extensions is None else image_extensions
+
+    for im in os.listdir(path):
+        if not os.path.isfile(os.path.join(path, im)) or os.path.splitext(im)[1] not in image_extensions:
+            return False
+    return True
+
+
 
 
 def abs_path(path: Union[str, Path]) -> Path:
