@@ -65,6 +65,10 @@ class FaceMatcher:
 
         matches = [reference_items[ref_max_index][0] if sims[face_index, ref_max_index] >= report_threshold else None
                    for face_index, ref_max_index in enumerate(initial_matching)]
+        
+        # remove None object
+        matches = [m for m in matches if m is not None]
+
         return matches
 
 
@@ -73,7 +77,7 @@ class FaceRecognizer:
                  reference_embeddings: Union[str, Path, Dict[str, np.ndarray]],
                  top_persons_detected: int = 5,
                  top_faces_detected: int = 2,
-                 yolo_path: Union[str, Path] = 'yolov8n.pt',
+                 yolo_path: Union[str, Path] = 'yolov8s.pt',
                  ):
         # initialize the face matcher
         self.face_matcher = FaceMatcher(reference_embeddings)

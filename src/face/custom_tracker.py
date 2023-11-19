@@ -3,7 +3,7 @@ import torch
 import yaml
 
 from argparse import Namespace
-from ultralytics.trackers import BYTETracker
+from ultralytics.trackers import BYTETracker, BOTSORT
 # import the type of the Yolo's outputs
 from ultralytics.engine.results import Results
 
