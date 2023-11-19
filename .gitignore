@@ -28,3 +28,6 @@ src/scene/autoencoders/runs
 *wideresnet.py*
 *exp*
 src/scene/autoencoders/autoencoders.ipynb
+*.MOV 
+*.yaml
+*.jpeg

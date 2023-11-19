@@ -55,8 +55,9 @@ def process_save_path(save_path: Union[str, Path, None],
         # create the directory if needed
         if not os.path.isfile(save_path):
             os.makedirs(save_path, exist_ok=True)
+        save_path = Path(save_path)
 
-    return Path(save_path)
+    return save_path
 
 
 def __directory_images(directory: Union[str, Path],

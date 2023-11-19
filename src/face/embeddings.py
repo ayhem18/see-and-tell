@@ -8,7 +8,7 @@ import itertools
 import json
 
 from pathlib import Path
-from typing import Union
+from typing import Union, List
 from _collections_abc import Sequence
 from torchvision.utils import save_image
 from PIL import Image
@@ -25,6 +25,14 @@ RESIZE_THRESHOLDS1 = [256, 300, 360, 480]
 RESIZE_THRESHOLDS2 = [480, 512, 600, 640, 750, 800, 1000]
 # set torch's manual seed
 torch.manual_seed(69)
+
+
+def read_embeddings(p: Union[str, Path]):
+    path = os.path.join(HOME, p) if os.path.isabs(p) else p
+    assert os.path.basename(p).endswith('.json'), "THE FILE MUST BE a .json file"
+
+    with open(path, 'r') as f:
+        return json.load(f)
 
 
 def build_embeddings(images: Sequence[Union[Path, str, np.ndarray, torch.tensor]],
@@ -70,8 +78,7 @@ def build_embeddings(images: Sequence[Union[Path, str, np.ndarray, torch.tensor]
     images = [Image.open(str(img)) if isinstance(img, (str, Path)) else img for img in images]
 
     if batch:
-        final_images = resize_images(images)
-        face_images = face_detector.forward(final_images.to(fr_singleton.get_device()))
+        face_images = face_detector.forward(images)
     else:
         face_images = [face_detector.forward(img) for img in images]
 
@@ -92,7 +99,7 @@ def build_embeddings(images: Sequence[Union[Path, str, np.ndarray, torch.tensor]
     # now, checking if all images are of the same dimensions
     shape = face_images[0].shape
     for face in face_images:
-        assert face.shape == shape
+        assert face.shape == shape, "All face must be of the same shape"
 
     # save the faces extracted from the images
     if save_faces is not None:
@@ -106,7 +113,7 @@ def build_embeddings(images: Sequence[Union[Path, str, np.ndarray, torch.tensor]
     # face_images is a list of torch.tensors
 
     # to get the embeddings, we simply: convert the list of tensors to one batched tensor
-    if not batch:
+    if isinstance(face_images, List):
         face_images = torch.stack(face_images).to(torch.float32).to(fr_singleton.get_device())
 
     embeddings = encoder(face_images).detach().cpu().numpy()
