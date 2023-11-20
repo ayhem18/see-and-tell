@@ -100,6 +100,7 @@ class SceneDenoiseAE(L.LightningModule):
               deconvolution_block(input_channels=16, output_channels=3, stride=2, kernel_size=4),
               ])
 
+        # shouldn't call save_hyperparameters() since, the 'conv_block' object is a nn.Module and should be quite heavy in size
         self.save_hyperparameters()
 
     def _forward_pass(self, batch):
@@ -182,6 +183,7 @@ def train_ae(train_dir: Union[str, Path],
              val_dir: Union[str, Path] = None,
              log_dir: Union[str, Path] = None,
              image_extensions: Iterable[str] = None,
+             run_name: str = None,
              batch_size: int = 32,
              num_epochs: int = 10):
     # first process both directories
@@ -223,7 +225,9 @@ def train_ae(train_dir: Union[str, Path],
     model = SceneDenoiseAE(convolutional_block=conv_block)
 
     wandb_logger = WandbLogger(project='cntell_auto_encoder',
-                               log_model="all", save_dir=log_dir)
+                               log_model="all", 
+                               save_dir=log_dir, 
+                               name=run_name)
 
     # define the trainer
     trainer = L.Trainer(logger=wandb_logger,
@@ -264,5 +268,7 @@ if __name__ == '__main__':
 
     train_ae(train_dir=train_dir,
              val_dir=val_dir,
-             batch_size=4,
-             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'), num_epochs=100)
+             run_name='train_auto_encoder',
+             batch_size=32,
+             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'), 
+             num_epochs=100)

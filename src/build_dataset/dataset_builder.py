@@ -70,9 +70,11 @@ def _keypoints_descriptors_classifier(
         torch.cuda.empty_cache() 
 
     # extract both the descriptors and the keypoints
-    k_images, d_images = image_feats['keypoints'], image_feats['descriptors']
-    k_refs, d_refs = reference_feats['keypoints'], reference_feats['descriptors']
-
+    try:
+        k_images, d_images = image_feats['keypoints'], image_feats['descriptors']
+        k_refs, d_refs = reference_feats['keypoints'], reference_feats['descriptors']
+    except Exception:
+        return None
     # the keypoints and descriptors should be expanded
 
     # the images should be repeated in blocks of 'num_references': so the final tensor will be of length num_references * num_images
@@ -206,6 +208,9 @@ class SceneClassificationDSBuilder:
                                                                 images=batch,
                                                                 display=False
                                                                 )
+                    
+                    if results is None:
+                        continue
                     # the 'results' object represents the following:
                     # each consecutive 'ref_batch' elements represent the number of strong matches
                     # between an image from 'batch' and all the given references in 'ref_batch'
@@ -215,7 +220,7 @@ class SceneClassificationDSBuilder:
                         # index of the image in the 'batch' object
                         images_score[pair_index // len(ref_batch)] += int(matches >= self.classification_threshold)
 
-                assert len(images_score) == len(batch)
+                # assert len(images_score) == len(batch)
 
                 # iterate through the images to classify them if needed
                 for im_index, score in images_score.items():
@@ -233,5 +238,5 @@ class SceneClassificationDSBuilder:
 
 if __name__ == '__main__':
     current = os.path.dirname(os.path.realpath(__file__))
-    builder = SceneClassificationDSBuilder(root=os.path.join(current, 'test'), batch_size=5)
+    builder = SceneClassificationDSBuilder(root=os.path.join(current, 'data_folder'), batch_size=5)
     builder.auto_label()

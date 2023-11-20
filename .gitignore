@@ -31,3 +31,4 @@ src/scene/autoencoders/autoencoders.ipynb
 *.MOV 
 *.yaml
 *.jpeg
+*lightglue*
