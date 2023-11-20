@@ -71,11 +71,11 @@ class YoloAnalyzer(object):
             f.write(req.content)
 
     @classmethod
-    def frames_signature(cls,
+    def frame_signature(cls,
                          tracking_results: List[Results],
                          xywh: bool = False):
         """
-        This function returns a unique signature for each frame: ([list of bounding boxes], [list of ids])
+        This function returns a unique signature for each frame: ([list of bounding boxes], [list of ids], [the confidence of the detections])
         Args:
             tracking_results: This a list of Results objects
             xywh: whether to return the bounding box in the xywh format or not
@@ -85,14 +85,21 @@ class YoloAnalyzer(object):
         """
 
         def signature(tres_obj: Results) -> Tuple[List, List]:
-            if tres_obj.boxes is None:
-                return [], []
-            boxes = [b.xywh.squeeze().cpu().tolist() if xywh else xywh_converter(b.xywh.squeeze().cpu().tolist()) 
-                    for b in tres_obj.boxes.cpu()]
+            if tres_obj.boxes is None :
+                return [], [], []
+            try:
+                boxes = [b.xywh.squeeze().cpu().tolist() if xywh else xywh_converter(b.xywh.squeeze().cpu().tolist()) 
+                        for b in tres_obj.boxes.cpu()]
+                
+                # the ids for whatever reason are wrapped in tensors
+                ids = [b.id.int().cpu().item() for b in tres_obj.boxes.cpu()]
+                probs = [(p.cpu().item() if isinstance(p, torch.Tensor) else p) for p in tres_obj.boxes.conf.cpu()]
+
+                return ids, boxes, probs
+                
+            except AttributeError:
+                return [], [], []
             
-            # the ids for whatever reason are wrapped in tensors
-            ids = [b.id.int().cpu().item() for b in tres_obj.boxes.cpu()]
-            return boxes, ids
 
         return [signature(tres_obj) for tres_obj in tracking_results]
 
@@ -148,8 +155,7 @@ class YoloAnalyzer(object):
 
     def _track(self, 
                frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
-               frame_cuts: Dict[Union[str, int], int], 
-               show: bool = False) -> List[Results]:
+               frame_cuts: Dict[Union[str, int], int]) -> List[Results]:
 
         """This function tracks the different people detected across the given sequence of frames
 
@@ -174,33 +180,29 @@ class YoloAnalyzer(object):
         if list(cut_frames.keys()) != sorted(cut_frames.keys()):
             raise ValueError(f"Make sure that the 'frames' are sorted chronologically") 
 
-        final_result = list(itertools.chain(*[self._track_single_cut(v, show=show) for k, v in cut_frames.items()]))               
+        final_result = []
+        largest_id = 0
+
+        for cut_number, cf in cut_frames.items():
+            cut_track_results = self._track_single_cut(cf)
+            cut_frame_signs = self.frame_signature(cut_track_results)
+            # the final step is to add the value of the largest_id to each id in the frame signatures
+            cut_frame_signs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_frame_signs if len(ids) > 0]
+            largest_id = max([max(s[0]) for s in cut_frame_signs])
+            final_result.extend(cut_frame_signs)
 
         return final_result
 
-    def _identify(self, tracking_results: List[Results]):
-        # create a dictionary to save the information about each id detected in the results
-        # the dictionary will be of the form {id: [(frame_index, boxes, probs)]}
+    def _identify(self, frame_signs: List[Tuple[List[float], List[int], List[float]]]):
         ids_dict = defaultdict(lambda: [])
 
-        # iterate through the results to extract the ids
-        for frame_index, results in enumerate(tracking_results):
-
-            boxes = results.boxes
-
-            if boxes is None:
-                continue
-            
-            ids = boxes.id.int().cpu().tolist()
-            probs = boxes.conf
-
-
+        for frame_index, sign in enumerate(frame_signs):
+            ids, boxes, probs = sign
             assert len(ids) == len(boxes) == len(probs), "Check the lengths of ids, probabilities and boxes"
 
-            for i, bb, p in zip(ids, boxes.xywh.cpu().tolist(), probs):
+            for i, bb, p in zip(ids, boxes, probs):
                 # convert the xywh bounding box to coordinates that can be used directly for image cropping
-                bounding_coordinates = xywh_converter(bb)
-                ids_dict[i].append((frame_index, bounding_coordinates, (p.cpu().item() if isinstance(p, torch.Tensor) else p)))
+                ids_dict[i].append((frame_index, bb, p))
 
         # the final step is to filter the results
         # keep only the top self.person_detected boxes for each id
@@ -208,6 +210,37 @@ class YoloAnalyzer(object):
             ids_dict[person_id] = sorted(info, key=lambda x: x[-1], reverse=True)[:self.top_persons_detected]
 
         return ids_dict
+
+    # def _identify(self, tracking_results: List[Results]):
+    #     # create a dictionary to save the information about each id detected in the results
+    #     # the dictionary will be of the form {id: [(frame_index, boxes, probs)]}
+    #     ids_dict = defaultdict(lambda: [])
+
+    #     # iterate through the results to extract the ids
+    #     for frame_index, results in enumerate(tracking_results):
+
+    #         boxes = results.boxes
+
+    #         if boxes is None:
+    #             continue
+            
+    #         ids = boxes.id.int().cpu().tolist()
+    #         probs = boxes.conf
+
+
+    #         assert len(ids) == len(boxes) == len(probs), "Check the lengths of ids, probabilities and boxes"
+
+    #         for i, bb, p in zip(ids, boxes.xywh.cpu().tolist(), probs):
+    #             # convert the xywh bounding box to coordinates that can be used directly for image cropping
+    #             bounding_coordinates = xywh_converter(bb)
+    #             ids_dict[i].append((frame_index, bounding_coordinates, (p.cpu().item() if isinstance(p, torch.Tensor) else p)))
+
+    #     # the final step is to filter the results
+    #     # keep only the top self.person_detected boxes for each id
+    #     for person_id, info in ids_dict.items():
+    #         ids_dict[person_id] = sorted(info, key=lambda x: x[-1], reverse=True)[:self.top_persons_detected]
+
+    #     return ids_dict
 
     def _detect_encode(self, 
                        frames,
@@ -274,12 +307,12 @@ class YoloAnalyzer(object):
 
         # now we can proceed
         # the first step is to track the frames
-        tracking_results = self._track(frames, frame_cuts=frame_cuts)
-        # create a signature for each frame
-        frame_signatures = self.frames_signature(tracking_results=tracking_results)
+        frame_signs = self._track(frames, frame_cuts=frame_cuts)
+        # # create a signature for each frame
+        # frame_signatures = self.frames_signature(tracking_results=tracking_results)
         # group each 'person' identified in the picture
-        person_ids = self._identify(tracking_results=tracking_results)
+        person_ids = self._identify(frame_signs=frame_signs)
         # time to encode each person ('id') detected by YOLO
         face_ids = self._detect_encode(frames, person_ids, debug=debug)
 
-        return frame_signatures, face_ids
+        return frame_signs, face_ids

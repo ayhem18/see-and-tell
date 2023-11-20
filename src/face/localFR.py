@@ -86,16 +86,20 @@ class FaceRecognizer:
 
     def recognize_faces(self,
                         frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
+                        frame_cuts: Dict[Union[str, int], int], 
                         display: bool = True, 
                         debug: bool = True):
         # first analyze the video
-        frames_signatures, person_ids = self.analyzer.analyze_frames(frames, debug=debug)
+        frames_signatures, person_ids = self.analyzer.analyze_frames(frames, 
+                                                                     frame_cuts=frame_cuts, 
+                                                                     debug=debug)
         # for each person_id finds the most probable face
         ids_labels = {}
         for person_id, face_embeddings in person_ids.items():
             id_matches = self.face_matcher.match(face_embeddings, report_threshold=REPORT_THRESHOLD)
             # set the label of the 'id' to the one with the highest occurrence
-            ids_labels[person_id] = Counter(id_matches).most_common()[0][0]
+            if len(id_matches) > 0:
+                ids_labels[person_id] = Counter(id_matches).most_common()[0][0]
 
         if display:
             self._display(frames, frames_signatures, ids_labels)
@@ -106,7 +110,7 @@ class FaceRecognizer:
             # make sure to convert the frames to a numpy array if needed
             f_np = cv.imread(f) if isinstance(f, (Path, str)) else f 
 
-            boxes, ids = sign
+            ids, boxes, _ = sign
             for b, i in zip(boxes, ids):
                 # it might be possible that certain ids present the frames were not associated with a class, 
                 # thus these ids won't be present in the ids_labels (it is an iff relation)                
