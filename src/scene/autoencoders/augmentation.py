@@ -27,8 +27,6 @@ import src.utilities.directories_and_files as dirf
 
 
 # the first idea for data augmentation is to cover the human bounding boxes in each image
-
-
 def xywh_converter(xywh: Iterable[int]) -> \
         Tuple[int, int, int, int]:
     # the idea is to accept a xywh bounding box and return 4 coordinates that can directly be
