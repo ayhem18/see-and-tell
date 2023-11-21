@@ -63,16 +63,3 @@ def load_model(feature_extractor: bool = False):
         return nn.Sequential(OrderedDict(modules_to_keep))
 
     return model
-
-
-from torchvision import transforms as trn
-
-
-def returnTF():
-    # load the image transformer
-    tf = trn.Compose([
-        trn.Resize((224, 224)),
-        trn.ToTensor(),
-        trn.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    return tf

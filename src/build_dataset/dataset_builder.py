@@ -59,10 +59,16 @@ def _keypoints_descriptors_classifier(
     images = torch.stack([load_image(im, resize=resize) for im in images]).to(device)
     references = torch.stack([load_image(r, resize=resize) for r in references]).to(device)
 
-    # let's think a bit about things work
-    image_feats = extractor.forward(data={"image": images})
-    reference_feats = extractor.forward(data={"image": references})
-
+    try:
+        # there is a bug inside the lightglue method, as it is not designed to work with batched input
+        # There error is thrown by torch.stack() function ath assumes all the tensors of the passed list are of the same shape
+        # this might or might not happen as certain pairs in the batch might be extremely different and cannot accumulate
+        # the maximum number of keypoints detected. (a hidden assumption in the code)
+        image_feats = extractor.forward(data={"image": images})
+        reference_feats = extractor.forward(data={"image": references})
+    except:
+        return None
+    
     if not display:
         images = None
         references = None
@@ -70,11 +76,9 @@ def _keypoints_descriptors_classifier(
         torch.cuda.empty_cache() 
 
     # extract both the descriptors and the keypoints
-    try:
-        k_images, d_images = image_feats['keypoints'], image_feats['descriptors']
-        k_refs, d_refs = reference_feats['keypoints'], reference_feats['descriptors']
-    except Exception:
-        return None
+    k_images, d_images = image_feats['keypoints'], image_feats['descriptors']
+    k_refs, d_refs = reference_feats['keypoints'], reference_feats['descriptors']
+
     # the keypoints and descriptors should be expanded
 
     # the images should be repeated in blocks of 'num_references': so the final tensor will be of length num_references * num_images

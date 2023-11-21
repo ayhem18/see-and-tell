@@ -23,6 +23,8 @@ from sklearn.model_selection import train_test_split
 
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning import seed_everything
+from torchvision import transforms as trn
+
 
 seed_everything(69, workers=True)
 
@@ -37,7 +39,8 @@ sys.path.append(str(current))
 sys.path.append(os.path.join(current, 'src'))
 
 from torch import nn
-from src.scene.classifier.pretrained_conv import load_model, returnTF
+# from src.scene.classifier.pretrained_conv import load_model, returnTF
+from src.scene.autoencoders.resnetFeatureExtractor import ResNetFeatureExtractor
 import src.utilities.directories_and_files as dirf
 import src.utilities.pytorch_utilities as pu
 
@@ -54,40 +57,39 @@ def deconvolution_block(input_channels,
                            kernel_size=kernel_size,
                            stride=stride),
     ]
-
+    
     if final_layer:
-        layers.append(nn.Tanh())
+        layers.extend([nn.Sigmoid()])
     else:
-        layers.extend([nn.BatchNorm2d(output_channels), nn.ReLU()])
+        layers.extend([nn.BatchNorm2d(output_channels), nn.LeakyReLU()])
 
     return nn.Sequential(*layers)
 
 
+def returnTF():
+    # load the image transformer
+    tf = trn.Compose([
+        trn.Resize((224, 224)),
+        trn.TrivialAugmentWide(),
+        trn.ToTensor(),        
+    ])
+    return tf
+
 class SceneDenoiseAE(L.LightningModule):
     _input_shape = (3, 224, 224)
 
-    def __init__(self, convolutional_block: nn.Module, *args: Any, **kwargs: Any):
+    def __init__(self, num_frozen_blocks: int = 2, *args: Any, **kwargs: Any):
         # the first step is to load the resnet model pretrained on the place365 dataset
         super().__init__(*args, **kwargs)
-        self.encoder = load_model(feature_extractor=True)
-
+        self.encoder = ResNetFeatureExtractor(num_blocks=3, freeze=num_frozen_blocks, add_global_average=False)
         o = self.encoder(torch.randn(1, 3, 224, 224))
-
-        if o.shape != (1, 512, 14, 14):
+        if o.shape != (1, 1024, 14, 14):
             raise ValueError(f"Please make sure the encoder is loaded correctly !!")
-
-        self.conv_block = convolutional_block
-
-        x_temp = torch.randn((1, 512, 14, 14))
-        y_temp = self.conv_block(x_temp)
-        if y_temp.shape != (1, 512, 14, 14):
-            raise ValueError(f"The convolutional block is expected to keep the dimensions of the input."
-                             f"Expected: {(3, 14, 14)}. Found: {y_temp.shape}")
-
+        
         # at this point we are sure the model will not silently break.
         # the architecture is hardcoded for the moment.
         self.decoder = nn.Sequential(
-            *[deconvolution_block(input_channels=512, output_channels=256, stride=2, kernel_size=9),
+            *[deconvolution_block(input_channels=1024, output_channels=256, stride=2, kernel_size=9),
 
               deconvolution_block(input_channels=256, output_channels=128, stride=1, kernel_size=6),
 
@@ -97,7 +99,7 @@ class SceneDenoiseAE(L.LightningModule):
 
               deconvolution_block(input_channels=32, output_channels=16, stride=2, kernel_size=9),
 
-              deconvolution_block(input_channels=16, output_channels=3, stride=2, kernel_size=4),
+              deconvolution_block(input_channels=16, output_channels=3, stride=2, kernel_size=4, final_layer=True),
               ])
 
         # shouldn't call save_hyperparameters() since, the 'conv_block' object is a nn.Module and should be quite heavy in size
@@ -112,7 +114,7 @@ class SceneDenoiseAE(L.LightningModule):
         if tuple(x.shape) != ((batch_size,) + self._input_shape):
             raise ValueError(f"The input is not of the expected shape: expected {self._input_shape}. "
                              f"Found: {x[0].shape}")
-        x_r = self.decoder(self.conv_block(self.encoder(x_noise)))
+        x_r = self.decoder(self.encoder(x_noise))
         # the loss is the Mean Squared Error between the constructed image and the original image
         mse_loss = F.mse_loss(x_r, x)
         return mse_loss, x_noise, x_r
@@ -131,17 +133,17 @@ class SceneDenoiseAE(L.LightningModule):
         # since the encoder is pretrained, we would like to avoid significantly modifying its weights/
         # on the other hand, the rest of the AE should have higher learning rates.
         parameters = [{"params": self.encoder.parameters(), "lr": 10 ** -5},
-                      {"params": self.conv_block.parameters(), "lr": 10 ** -2},
-                      {"params": self.decoder.parameters(), "lr": 10 ** -3}]
-
+                      {"params": self.decoder.parameters(), "lr": 10 ** -2}]
         # add a learning rate scheduler        
         optimizer = optim.Adam(parameters)
-
         return optimizer
 
-    # this is the loading function used in the DatasetFolder pytorch implementation.
+    def forward(self, x: torch.Tensor):
+        _, _, x_r =  self._forward_pass(x)
+        return x_r
 
 
+# this is the loading function used in the DatasetFolder pytorch implementation.
 def _load_sample(path):
     with open(path, "rb") as f:
         img = Image.open(f)
@@ -176,6 +178,7 @@ def add_noise(x: torch.Tensor, noise_factor: float = 0.3) -> torch.Tensor:
     # the first step is to add Guassian noise
     x_noise = x + noise_factor * torch.randn(*x.shape).to(pu.get_module_device(x))
     # make sure to clip the noise to the range [0, 1] # since the original image has pixel values in that range
+    # return x_noise
     return torch.clip(x_noise, min=0, max=1)
 
 
@@ -216,21 +219,23 @@ def train_ae(train_dir: Union[str, Path],
         val_dl = None
 
     # the convolutional block
-    conv_block = nn.Sequential(
-        nn.Conv2d(in_channels=512, out_channels=512, kernel_size=(5, 5), stride=1, padding='same'),
-        nn.Conv2d(in_channels=512, out_channels=512, kernel_size=(3, 3), stride=1, padding='same'),
-        nn.BatchNorm2d(num_features=512),
-        nn.ReLU())
+    # conv_block = nn.Sequential(
+    #     nn.Conv2d(in_channels=512, out_channels=512, kernel_size=(5, 5), stride=1, padding='same'),
+    #     nn.Conv2d(in_channels=512, out_channels=512, kernel_size=(3, 3), stride=1, padding='same'),
+    #     nn.BatchNorm2d(num_features=512),
+    #     nn.ReLU())
 
-    model = SceneDenoiseAE(convolutional_block=conv_block)
-
+    model = SceneDenoiseAE()
+    
     wandb_logger = WandbLogger(project='cntell_auto_encoder',
                                log_model="all", 
                                save_dir=log_dir, 
                                name=run_name)
 
     # define the trainer
-    trainer = L.Trainer(logger=wandb_logger,
+    trainer = L.Trainer(accelerator='gpu',
+                        devices=1,
+                        logger=wandb_logger,
                         default_root_dir=log_dir,
                         max_epochs=num_epochs,
                         deterministic=True)
@@ -242,7 +247,7 @@ def train_ae(train_dir: Union[str, Path],
                 )
 
 
-if __name__ == '__main__':
+def main():
     wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
 
     all_data = os.path.join(PARENT_DIR, 'src', 'scene', 'augmented_data')
@@ -270,5 +275,25 @@ if __name__ == '__main__':
              val_dir=val_dir,
              run_name='train_auto_encoder',
              batch_size=32,
-             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'), 
+             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'),     
              num_epochs=100)
+    
+
+def sanity_check(run_name):
+    wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
+    train_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'sanity_train')
+    val_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'val_dir')
+
+    logs = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
+    os.makedirs(logs, exist_ok=True)
+
+    train_ae(train_dir=train_dir,
+             val_dir=val_dir,            
+             run_name=run_name,
+             batch_size=32,
+             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'),     
+             num_epochs=250)
+
+
+if __name__ == '__main__':
+    sanity_check('ae_sanity_check_1')
