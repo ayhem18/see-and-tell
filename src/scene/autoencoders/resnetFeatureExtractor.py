@@ -8,12 +8,15 @@ in pretrained network. I am applying the same framework on the resnet architectu
 """
 
 import torch
+import warnings
 
-from typing import Iterator, Union
+from typing import Iterator, Union, Tuple, Any
 from collections import OrderedDict
 
 from torch import nn
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import resnet18, resnet34, resnet50, resnet101, resnet152
+from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights, ResNet101_Weights, ResNet152_Weights  
+ 
 # Bottleneck is the class that contains the Residual block
 from torchvision.models.resnet import Bottleneck
 
@@ -33,12 +36,24 @@ def contains_fc_layer(module: nn.Module) -> bool:
 
 
 # noinspection PyUnresolvedReferences,PyShadowingNames
-class ResNetFeatureExtractor(nn.Module):
-    default_transform = ResNet50_Weights.DEFAULT.transforms()
     
-    # the model's architecture refers to blocks with the same number of channels as 'layers'
-    # a function to build the transferred part from the original resnet model
-    # in case of 'layer' blocks
+class ResNetFeatureExtractor(nn.Module):
+    __archs__ = [18, 34, 50, 101, 152]
+    
+    archs_dict = {18: (resnet18, ResNet18_Weights), 
+                     34: (resnet34, ResNet34_Weights), 
+                     50: (resnet50, ResNet50_Weights), 
+                     101: (resnet101, ResNet101_Weights), 
+                     152: (resnet152, ResNet152_Weights)}
+    
+    @classmethod    
+    def get_model(cls, architecture: int) -> Tuple[nn.Module, Any]:
+        if architecture not in cls.__archs__:
+            warnings.warn(f'The value {architecture} was passed as architecture. Defaulting to {50}')
+            architecture = 50
+
+        return cls.archs_dict[architecture]
+
     def __feature_extractor_layers(self, number_of_layers: int):
         # passing a negative value would mean retrieving the entire feature extractor
         number_of_layers = number_of_layers if number_of_layers > 0 else float('inf')
@@ -63,18 +78,18 @@ class ResNetFeatureExtractor(nn.Module):
 
     def __init__(self,
                  num_blocks: int,  # the number of blocks to keep
-                 blocks_type: str = LAYER_BLOCK,  # the type of blocks to consider (layers or residual blocks)
                  freeze: Union[bool, int] = True,  # whether to freeze the chosen layers or not
                  add_global_average: bool = True,
+                 architecture: int = 50,
                  *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # first make sure the blocks_type argument is correct
-        assert blocks_type in [LAYER_BLOCK, RESIDUAL_BLOCK], "MAKE SURE TO PASS A SUPPORTED TYPE OF BLOCKS"
-
-        self.num_blocks = num_blocks
-        # make sure to explicitly
-        self.__net = resnet50(ResNet50_Weights.DEFAULT)
         
+        super().__init__(*args, **kwargs)
+        self.num_blocks = num_blocks
+
+        constructor, weights = self.get_model(architecture=architecture)
+        self.__net = constructor(weights.DEFAULT) 
+        self.transform = weights.DEFAULT.transforms()
+
         self.add_gb_avg = add_global_average
         self.feature_extractor = None
         self.modules = None

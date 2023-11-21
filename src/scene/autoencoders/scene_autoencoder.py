@@ -49,13 +49,14 @@ def deconvolution_block(input_channels,
                         output_channels,
                         kernel_size=4,
                         stride=2,
-                        padding: int = 1,
+                        padding: int = 0,
                         final_layer: bool = False):
     layers = [
         nn.ConvTranspose2d(in_channels=input_channels,
                            out_channels=output_channels,
                            kernel_size=kernel_size,
-                           stride=stride),
+                           stride=stride, 
+                           padding=padding),
     ]
     
     if final_layer:
@@ -66,29 +67,19 @@ def deconvolution_block(input_channels,
     return nn.Sequential(*layers)
 
 
-def returnTF():
+def returnTF(add_augment: bool = True):
     # load the image transformer
     tf = trn.Compose([
         trn.Resize((224, 224)),
         trn.TrivialAugmentWide(),
         trn.ToTensor(),        
-    ])
+    ]) if add_augment else trn.Compose([trn.Resize((224, 224)), trn.ToTensor()])
+    
     return tf
 
-class SceneDenoiseAE(L.LightningModule):
-    _input_shape = (3, 224, 224)
+# let's define 2 decoders
 
-    def __init__(self, num_frozen_blocks: int = 2, *args: Any, **kwargs: Any):
-        # the first step is to load the resnet model pretrained on the place365 dataset
-        super().__init__(*args, **kwargs)
-        self.encoder = ResNetFeatureExtractor(num_blocks=3, freeze=num_frozen_blocks, add_global_average=False)
-        o = self.encoder(torch.randn(1, 3, 224, 224))
-        if o.shape != (1, 1024, 14, 14):
-            raise ValueError(f"Please make sure the encoder is loaded correctly !!")
-        
-        # at this point we are sure the model will not silently break.
-        # the architecture is hardcoded for the moment.
-        self.decoder = nn.Sequential(
+_decoder_14_14 = nn.Sequential(
             *[deconvolution_block(input_channels=1024, output_channels=256, stride=2, kernel_size=9),
 
               deconvolution_block(input_channels=256, output_channels=128, stride=1, kernel_size=6),
@@ -102,10 +93,55 @@ class SceneDenoiseAE(L.LightningModule):
               deconvolution_block(input_channels=16, output_channels=3, stride=2, kernel_size=4, final_layer=True),
               ])
 
+_decoder_7_7 = nn.Sequential(
+    *[
+    deconvolution_block(input_channels=2048, output_channels=1024, stride=1, kernel_size=5, padding=1),
+
+    deconvolution_block(input_channels=1024, output_channels=512, stride=1, kernel_size=5, padding=1), 
+
+    deconvolution_block(input_channels=512, output_channels=256, stride=1, kernel_size=4), 
+
+    deconvolution_block(input_channels=256, output_channels=128, stride=2, kernel_size=9),
+
+    deconvolution_block(input_channels=128, output_channels=64, stride=1, kernel_size=6),
+
+    deconvolution_block(input_channels=64, output_channels=32, stride=1, kernel_size=7),
+
+    deconvolution_block(input_channels=32, output_channels=16, stride=1, kernel_size=7),
+
+    deconvolution_block(input_channels=16, output_channels=8, stride=2, kernel_size=9),
+
+    deconvolution_block(input_channels=8, output_channels=3, stride=2, kernel_size=4, final_layer=True)]
+)
+
+
+class SceneDenoiseAE(L.LightningModule):
+    _input_shape = (3, 224, 224)
+
+    def __init__(self, 
+                 architecture: int = 50, 
+                 num_blocks: int = 3,
+                 freeze: int = 2, 
+                 *args: Any, **kwargs: Any):
+        # the first step is to load the resnet model pretrained on the place365 dataset
+        super().__init__(*args, **kwargs)
+        self.encoder = ResNetFeatureExtractor(architecture=architecture, 
+                                              num_blocks=num_blocks, 
+                                              freeze=freeze, 
+                                              add_global_average=False)
+        
+        o = self.encoder(torch.randn(1, 3, 224, 224))
+
+        if o.shape not in [(1, 2048, 7, 7), (1, 1024, 14, 14)]:
+            raise ValueError(f"Please make sure the encoder is chosen such that the output is in {[(1, 2048, 7, 7), (1, 1024, 14, 14)]}")
+        
+        # at this point we are sure the model will not silently break.
+        self.decoder = _decoder_14_14 if o.shape == (1, 1024, 14, 14) else _decoder_7_7
+
         # shouldn't call save_hyperparameters() since, the 'conv_block' object is a nn.Module and should be quite heavy in size
         self.save_hyperparameters()
 
-    def _forward_pass(self, batch):
+    def _forward_pass(self, batch, loss_reduced: bool = True):
         x = batch
         x_noise = add_noise(x, noise_factor=random.random() * 0.5)
         # make sure both x, and x_noise are of the expected dimensions
@@ -127,16 +163,22 @@ class SceneDenoiseAE(L.LightningModule):
     def validation_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         mse_loss, _, _ = self._forward_pass(batch)
         self.log(name='val_loss', value=mse_loss.cpu().item())
+
+        # first 
+
         return mse_loss
+
 
     def configure_optimizers(self):
         # since the encoder is pretrained, we would like to avoid significantly modifying its weights/
         # on the other hand, the rest of the AE should have higher learning rates.
         parameters = [{"params": self.encoder.parameters(), "lr": 10 ** -5},
-                      {"params": self.decoder.parameters(), "lr": 10 ** -2}]
+                      {"params": self.decoder.parameters(), "lr": 10 ** -1}]
         # add a learning rate scheduler        
         optimizer = optim.Adam(parameters)
-        return optimizer
+        # create lr scheduler
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.995)
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
     def forward(self, x: torch.Tensor):
         _, _, x_r =  self._forward_pass(x)
@@ -182,13 +224,15 @@ def add_noise(x: torch.Tensor, noise_factor: float = 0.3) -> torch.Tensor:
     return torch.clip(x_noise, min=0, max=1)
 
 
-def train_ae(train_dir: Union[str, Path],
+def train_ae(model: SceneDenoiseAE,
+             train_dir: Union[str, Path],
              val_dir: Union[str, Path] = None,
              log_dir: Union[str, Path] = None,
              image_extensions: Iterable[str] = None,
              run_name: str = None,
              batch_size: int = 32,
-             num_epochs: int = 10):
+             num_epochs: int = 10, 
+             add_augmentation: bool = True):
     # first process both directories
     train_dir = dirf.process_save_path(train_dir,
                                        file_ok=False,
@@ -201,7 +245,7 @@ def train_ae(train_dir: Union[str, Path],
     log_dir = dirf.process_save_path(log_dir, file_ok=False)
 
     # define the dataset 
-    model_transformation = returnTF()
+    model_transformation = returnTF(add_augment=add_augmentation)
 
     train_dataset = GenerativeDS(data_path=train_dir,
                                  transformation=model_transformation)
@@ -217,15 +261,6 @@ def train_ae(train_dir: Union[str, Path],
                             pin_memory=True, )
     else:
         val_dl = None
-
-    # the convolutional block
-    # conv_block = nn.Sequential(
-    #     nn.Conv2d(in_channels=512, out_channels=512, kernel_size=(5, 5), stride=1, padding='same'),
-    #     nn.Conv2d(in_channels=512, out_channels=512, kernel_size=(3, 3), stride=1, padding='same'),
-    #     nn.BatchNorm2d(num_features=512),
-    #     nn.ReLU())
-
-    model = SceneDenoiseAE()
     
     wandb_logger = WandbLogger(project='cntell_auto_encoder',
                                log_model="all", 
@@ -234,10 +269,14 @@ def train_ae(train_dir: Union[str, Path],
 
     # define the trainer
     trainer = L.Trainer(accelerator='gpu',
-                        devices=1,
+                        devices=2,
+                        
                         logger=wandb_logger,
                         default_root_dir=log_dir,
+                        
                         max_epochs=num_epochs,
+                        check_val_every_n_epoch=5,
+
                         deterministic=True)
 
     # the val_dataloaders have 'None' values as default
@@ -280,6 +319,7 @@ def main():
     
 
 def sanity_check(run_name):
+
     wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
     train_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'sanity_train')
     val_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'val_dir')
@@ -287,13 +327,17 @@ def sanity_check(run_name):
     logs = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
     os.makedirs(logs, exist_ok=True)
 
-    train_ae(train_dir=train_dir,
+    model = SceneDenoiseAE(architecture=152, num_blocks=4, freeze=2)
+
+    train_ae(
+            model=model,
+            train_dir=train_dir,
              val_dir=val_dir,            
              run_name=run_name,
              batch_size=32,
              log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'),     
-             num_epochs=250)
-
+             num_epochs=250,
+             add_augmentation=False)
 
 if __name__ == '__main__':
-    sanity_check('ae_sanity_check_1')
+    sanity_check('ae_sanity_check_3')
