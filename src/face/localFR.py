@@ -67,7 +67,7 @@ class FaceMatcher:
                    for face_index, ref_max_index in enumerate(initial_matching)]
         
         # remove None object
-        matches = [m for m in matches if m is not None]
+        # matches = [m for m in matches if m is not None]
 
         return matches
 
@@ -98,8 +98,10 @@ class FaceRecognizer:
         for person_id, face_embeddings in person_ids.items():
             id_matches = self.face_matcher.match(face_embeddings, report_threshold=REPORT_THRESHOLD)
             # set the label of the 'id' to the one with the highest occurrence
-            if len(id_matches) > 0:
-                ids_labels[person_id] = Counter(id_matches).most_common()[0][0]
+            label = Counter(id_matches).most_common()
+            if label is not None:
+                ids_labels[person_id] = label[0][0]
+
 
         if display:
             self._display(frames, frames_signatures, ids_labels)
