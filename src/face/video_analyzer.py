@@ -73,18 +73,21 @@ class YoloAnalyzer(object):
     @classmethod
     def frame_signature(cls,
                          tracking_results: List[Results],
-                         xywh: bool = False):
-        """
-        This function returns a unique signature for each frame: ([list of bounding boxes], [list of ids], [the confidence of the detections])
+                         xywh: bool = False) -> List[Tuple[List, List, List]]:
+        """Assuming the tracking results applied on a set of frames, this function will return a tuple: 
+        ('ids', 'bounding boxes' and 'probabilities') of humans detected in each frame.
+
         Args:
-            tracking_results: This a list of Results objects
-            xywh: whether to return the bounding box in the xywh format or not
+            tracking_results (List[Results]): The results return by the track() method of the Yolo Model.
+            xywh (bool, optional): whether to convert the bounding boxes into x0, x1, y0, y1 format. Defaults to False.
 
         Returns:
-        
+            List[Tuple[List, List, List]]: The signature for each frame saved in a list 
         """
 
-        def signature(tres_obj: Results) -> Tuple[List, List]:
+        "This function returns a unique signature for each frame: ([list of bounding boxes], [list of ids], [the confidence of the detections])"
+
+        def signature(tres_obj: Results) -> Tuple[List, List, List]:
             if tres_obj.boxes is None :
                 return [], [], []
             try:
@@ -98,9 +101,9 @@ class YoloAnalyzer(object):
                 return ids, boxes, probs
                 
             except AttributeError:
+                # this error mainly rises when the field 'id' is None while boxes is not
                 return [], [], []
             
-
         return [signature(tres_obj) for tres_obj in tracking_results]
 
     def __init__(self,
@@ -119,9 +122,10 @@ class YoloAnalyzer(object):
 
         # the yolo components
         self.yolo = YOLO(yolo_path)
-
+        # when passed in batch the Yolo.track function does is not persistent across the frames inside the batch
+        # a custom tracker to solve this problem.
         self.tracker = CustomByteTracker(os.path.join(self._file_dir(), 'tracker.yaml'))
-
+        
         singleton = FR_SingletonInitializer()
         self.face_detector = singleton.get_face_detector()
         self.face_encoder = singleton.get_encoder()
@@ -129,15 +133,16 @@ class YoloAnalyzer(object):
 
     def _track_single_cut(self, 
                           frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
-                          ):
-        """This function tracks the different people detected across the given sequence of frames
+                          ) -> List[Results]:
+        """Given a sequence of frames (assuming they belong to the same cut / camera shot), this function returns
+        the tracking results applied on each frame. 
 
         Args:
-            frames (Sequence[Union[Path, str, np.ndarray, torch.Tensor]]): a sequence of frames. The assumption is
-            that frames are consecutive in time.
+            frames (Sequence[Union[Path, str, np.ndarray, torch.Tensor]]): 
+            A sequence of frames, either as paths, numpy arrays or tensors
 
         Returns:
-            List[Results]: a list of Yolo Results objects
+            List[Results]: Each frame is associated with a Results object summarizing the frame's main results.
         """
 
         tracking_results = self.yolo.track(source=frames,
@@ -147,59 +152,78 @@ class YoloAnalyzer(object):
                             show=False, 
                             tracker='bytetrack.yaml',
                             verbose=False,)
-
+        # self.tracker.track modifies the results in place.
         self.tracker.track(tracking_results)
-        
         return tracking_results
 
 
     def _track(self, 
                frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
                frame_cuts: Dict[Union[str, int], int]) -> List[Results]:
-
         """This function tracks the different people detected across the given sequence of frames
 
         Args:
             frames (Sequence[Union[Path, str, np.ndarray, torch.Tensor]]): a sequence of frames. The assumption is
             that frames are consecutive in time.
-
         Returns:
             List[Results]: a list of Yolo Results objects
         """
-
+        # initialize a dictionary that map the cut number of the frames belong to that cut.
         cut_frames = defaultdict(lambda : [])
-        # this is the first step in the face detection pipeline: Detecting people in the image + tracking them
         if isinstance(frames, (np.ndarray, torch.Tensor)):
             for index, f in enumerate(frames):
                 cut_frames[frame_cuts[index]].append(f)
         else:
             for f in frames:
                 cut_frames[frame_cuts[f]].append(f)
-
-        # make sure the cuts are sorted
+        
+        # make sure the frames are sorted 
         if list(cut_frames.keys()) != sorted(cut_frames.keys()):
             raise ValueError(f"Make sure that the 'frames' are sorted chronologically") 
 
+        # NOTE: the self._track_single_cut method will return ids starting from '1'
+        # since this function is called for each cut, the ids will be repeated. Adding the largest id (so far)
+        # will ensure id uniqueness.
         final_result = []
         largest_id = 0
 
         for cut_number, cf in cut_frames.items():
+            # get the tracking results for the frames of a given cut.
             cut_track_results = self._track_single_cut(cf)
-            cut_frame_signs = self.frame_signature(cut_track_results)
+            # convert the results into frame signatures
+            cut_fs = self.frame_signature(cut_track_results)
             # the final step is to add the value of the largest_id to each id in the frame signatures
-            cut_frame_signs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_frame_signs if len(ids) > 0]
-            largest_id = max([max(s[0]) for s in cut_frame_signs])
-            final_result.extend(cut_frame_signs)
+            cut_fs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_fs]
+            # extract the currently large id
+            largest_id = max([max(s[0]) for s in cut_fs if len(s[0]) > 0]) # the condition is added since 'max' raise errors with empty lists.
+            # save the results
+            final_result.extend(cut_fs)
 
+        # before returning the results, a final safety check: The number of results matches that of the frames
+        if len(final_result) != len(frames):
+            raise ValueError((f"The number of final frame signatures do not match the number of passed frames.\n"
+                             f"frames {len(frames)}, signatures: {len(final_result)}"))
+        
         return final_result
 
-    def _identify(self, frame_signs: List[Tuple[List[float], List[int], List[float]]]):
+    def _identify(self, frame_signs: List[Tuple[List[float], List[int], List[float]]]) -> defaultdict[int: list]:
+        """Given a the frame signatures, this function simply groups the 'ids' and selects the 
+        'self.top_persons_detected' with the highest confidence and return 
+            1. list of frames where this the id appears
+            2. list of bounding boxes associated with the id
+            3. The confidence of the bounding box
+ 
+        Args:
+            frame_signs (List[Tuple[List[float], List[int], List[float]]]): The signature of each frame.
+
+        Returns:
+            defaultdict: a map between track ids and the fom
+        """
         ids_dict = defaultdict(lambda: [])
 
         for frame_index, sign in enumerate(frame_signs):
             ids, boxes, probs = sign
             assert len(ids) == len(boxes) == len(probs), "Check the lengths of ids, probabilities and boxes"
-
             for i, bb, p in zip(ids, boxes, probs):
                 # convert the xywh bounding box to coordinates that can be used directly for image cropping
                 ids_dict[i].append((frame_index, bb, p))
@@ -211,52 +235,31 @@ class YoloAnalyzer(object):
 
         return ids_dict
 
-    # def _identify(self, tracking_results: List[Results]):
-    #     # create a dictionary to save the information about each id detected in the results
-    #     # the dictionary will be of the form {id: [(frame_index, boxes, probs)]}
-    #     ids_dict = defaultdict(lambda: [])
-
-    #     # iterate through the results to extract the ids
-    #     for frame_index, results in enumerate(tracking_results):
-
-    #         boxes = results.boxes
-
-    #         if boxes is None:
-    #             continue
-            
-    #         ids = boxes.id.int().cpu().tolist()
-    #         probs = boxes.conf
-
-
-    #         assert len(ids) == len(boxes) == len(probs), "Check the lengths of ids, probabilities and boxes"
-
-    #         for i, bb, p in zip(ids, boxes.xywh.cpu().tolist(), probs):
-    #             # convert the xywh bounding box to coordinates that can be used directly for image cropping
-    #             bounding_coordinates = xywh_converter(bb)
-    #             ids_dict[i].append((frame_index, bounding_coordinates, (p.cpu().item() if isinstance(p, torch.Tensor) else p)))
-
-    #     # the final step is to filter the results
-    #     # keep only the top self.person_detected boxes for each id
-    #     for person_id, info in ids_dict.items():
-    #         ids_dict[person_id] = sorted(info, key=lambda x: x[-1], reverse=True)[:self.top_persons_detected]
-
-    #     return ids_dict
-
     def _detect_encode(self, 
-                       frames,
+                       frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
                        person_dict: Dict[int, List],
                        crop_person: bool = True,
-                       debug: bool = False) -> Dict[int, List[np.ndarray]]:
+                       debug: bool = False) -> Dict[int, np.ndarray]:
+        """This function will simply map each id to 'self.top_faces_detected' faces with the highest confidence 
+        saved as numpy arrays.
+
+        Args:
+            frames: a sequence of frames
+            person_dict (Dict[int, List]): a dictionary that map 'ids' to their corresponding information.
+            crop_person (bool, optional): whether to pass crop the input to the face detector or not . Defaults to True.
+            debug (bool, optional): whether to display the cropped images. Defaults to False.
+
+        Returns:
+            Dict[int, np.ndarray]: the map between the 'id' and the face representations. 
+        """
 
         if crop_person:
             frames = images_to_numpy(frames)
 
         # detect only the most probable face, as the input will be cropped to contain only one image
         self.face_detector.keep_all = False
-        # the function crop_image will return a numpy array. The images will be of different dimensions.
-        # the facenet-pytorch implementation only accepts batched input as:
-        # either a list of PIL.Image files or torch.tensors
 
+        # the function crop_image will return a numpy array. The images will be of different dimensions.
         id_cropped_images = dict([(person_id, [crop_image(frames[frame_index], bb, debug=debug, title=f'id: {person_id}, frame: {frame_index}')
                                                for frame_index, bb, _ in person_info])
                                   for person_id, person_info in person_dict.items()])
@@ -274,7 +277,7 @@ class YoloAnalyzer(object):
             sorted_output = sorted([output for output in face_prob if output[0] is not None], 
                                    key=lambda x: x[-1], reverse=True)[:self.top_faces_detected]
             
-            # account for the fact that certain persons in the given images do not have their face shown 
+            # account for the fact that certain 'ids' are associated with people but with blurry / not visible faces. 
             if len(sorted_output) == 0:
                 continue
 
@@ -289,7 +292,20 @@ class YoloAnalyzer(object):
     def analyze_frames(self,
                        frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
                        frame_cuts: Dict[Union[str, int], int], 
-                       debug: bool = False):
+                       debug: bool = False) -> Tuple[List, Dict[int, str]]:
+        """This function returns the signature of each frame: ['ids', 'boxes', 'probs'] , groups the ids
+        and associate each ids with the most probable / likely face embeddings (to be later passed to the face matching mechanism.) 
+
+        Args:
+            frames (Sequence[Union[Path, str, np.ndarray, torch.Tensor]]): a sequence of frames
+            frame_cuts (Dict[Union[str, int], int]): a map between the frame and the cut it belongs to
+            debug (bool, optional): whether to display the cropped images or not. Defaults to False.
+
+        Returns:
+            Tuple[List, Dict[int, str]]: The signature of each frame, and the mapping between the ids and their face representations.
+        """
+
+
         # first make sure the frame_cuts variable satisfies certain requirements
         if isinstance(frames, (np.ndarray, torch.Tensor)):
             # if the frames are already in tabular form
@@ -308,8 +324,6 @@ class YoloAnalyzer(object):
         # now we can proceed
         # the first step is to track the frames
         frame_signs = self._track(frames, frame_cuts=frame_cuts)
-        # # create a signature for each frame
-        # frame_signatures = self.frames_signature(tracking_results=tracking_results)
         # group each 'person' identified in the picture
         person_ids = self._identify(frame_signs=frame_signs)
         # time to encode each person ('id') detected by YOLO
