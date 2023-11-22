@@ -121,7 +121,8 @@ class SceneDenoiseAE(L.LightningModule):
     def __init__(self, 
                  architecture: int = 50, 
                  num_blocks: int = 3,
-                 freeze: int = 2, 
+                 freeze: int = 2,
+                 num_vis_images: int = 3, 
                  *args: Any, **kwargs: Any):
         # the first step is to load the resnet model pretrained on the place365 dataset
         super().__init__(*args, **kwargs)
@@ -138,6 +139,9 @@ class SceneDenoiseAE(L.LightningModule):
         # at this point we are sure the model will not silently break.
         self.decoder = _decoder_14_14 if o.shape == (1, 1024, 14, 14) else _decoder_7_7
 
+        # the number of images to visualize in a validation step
+        self.num_vis_images = num_vis_images
+
         # shouldn't call save_hyperparameters() since, the 'conv_block' object is a nn.Module and should be quite heavy in size
         self.save_hyperparameters()
 
@@ -152,7 +156,7 @@ class SceneDenoiseAE(L.LightningModule):
                              f"Found: {x[0].shape}")
         x_r = self.decoder(self.encoder(x_noise))
         # the loss is the Mean Squared Error between the constructed image and the original image
-        mse_loss = F.mse_loss(x_r, x)
+        mse_loss = F.mse_loss(x_r, x, reduction=('mean' if loss_reduced else 'none'))
         return mse_loss, x_noise, x_r
 
     def training_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
@@ -160,13 +164,34 @@ class SceneDenoiseAE(L.LightningModule):
         self.log(name='train_loss', value=mse_loss.cpu().item())
         return mse_loss
 
-    def validation_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
-        mse_loss, _, _ = self._forward_pass(batch)
-        self.log(name='val_loss', value=mse_loss.cpu().item())
+    def validation_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:        
+        mse_losses, x_noise, x_r = self._forward_pass(batch, loss_reduced=False)
+        # calculate the mse loss value
+        mse = torch.mean(mse_losses).cpu().item()
+        # first log the validation loss
+        self.log(name='val_loss', value=mse)  
 
-        # first 
+        # compute the loss for each image 
+        image_losses = torch.mean(mse_losses, dim=(1, 2, 3))
+        # extract the images with the largest loss
+        top_losses, top_indices = torch.topk(input=image_losses, k=self.num_vis_images, dim=-1)
 
-        return mse_loss
+        # convert all the data to numpy arrays
+        b, xn, xr = (batch[top_indices].detach().cpu().permute(0, 2, 3, 1).numpy(), 
+                     x_noise[top_indices].detach().cpu().permute(0, 2, 3, 1).numpy(), 
+                     x_r[top_indices].detach().cpu().permute(0, 2, 3, 1).numpy())
+        
+        top_losses = top_losses.detach().cpu().numpy()
+
+        data = [[wandb.Image(img), wandb.Image(img_noise), wandb.Image(img_r), l, self.current_epoch] 
+                for img, img_noise, img_r, l in zip(b, xn, xr, top_losses)]
+        
+        columns = ['image', 'noisy_image', 'reconstructed_image', 'val_loss', 'epoch']   
+
+        # log the data
+        self.logger.log_table(key='val_summary', columns=columns, data=data)
+        
+        return image_losses
 
 
     def configure_optimizers(self):
@@ -258,7 +283,7 @@ def train_ae(model: SceneDenoiseAE,
         val_dl = DataLoader(dataset=GenerativeDS(data_path=val_dir, transformation=model_transformation),
                             batch_size=batch_size,
                             shuffle=True,
-                            pin_memory=True, )
+                            pin_memory=True)
     else:
         val_dl = None
     
@@ -269,8 +294,7 @@ def train_ae(model: SceneDenoiseAE,
 
     # define the trainer
     trainer = L.Trainer(accelerator='gpu',
-                        devices=2,
-                        
+                        devices=1,
                         logger=wandb_logger,
                         default_root_dir=log_dir,
                         
@@ -340,4 +364,4 @@ def sanity_check(run_name):
              add_augmentation=False)
 
 if __name__ == '__main__':
-    sanity_check('ae_sanity_check_3')
+    sanity_check('ae_sanity_check_4')
