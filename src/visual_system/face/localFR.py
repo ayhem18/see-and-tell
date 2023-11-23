@@ -98,14 +98,18 @@ class FaceRecognizer:
         for person_id, face_embeddings in person_ids.items():
             id_matches = self.face_matcher.match(face_embeddings, report_threshold=REPORT_THRESHOLD)
             # set the label of the 'id' to the one with the highest occurrence
-            label = Counter(id_matches).most_common(1)[0][0]
-            if label is not None:
-                ids_labels[person_id] = label
+            label = Counter(id_matches).most_common()
+            if len(label) > 0:
+                ids_labels[person_id] = label[0][0]
 
 
         if display:
             self._display(frames, frames_signatures, ids_labels)
-        return frames_signatures, ids_labels
+        
+        # time to reduce the frame signatures by removing the information about ids with no labels
+        filtered_signs = [list(map(list, zip(*[(i, b, p) for i, b, p in zip(fs[0], fs[1], fs[2]) if i in person_ids]))) for fs in frames_signatures]
+        
+        return filtered_signs, ids_labels
 
     def _display(self, frames, frames_signatures, ids_labels):
         for f, sign in zip(frames, frames_signatures):

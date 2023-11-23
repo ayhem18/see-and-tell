@@ -92,6 +92,7 @@ class FaceExtractor():
         output, probs = self.face_detector.detect(images)
         # convert to a list: better than an array of arrays
         output = output.tolist()
+        
         if return_probs:
             return output, probs
         
