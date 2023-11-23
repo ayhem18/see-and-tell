@@ -28,11 +28,11 @@ class FR_SingletonInitializer(object):
 
         return cls.instance
 
-    def get_device(self):
+    def get_device(self) -> str:
         return self.__device
 
-    def get_encoder(self):
+    def get_encoder(self) -> InceptionResnetV1:
         return self.__encoder
 
-    def get_face_detector(self):
+    def get_face_detector(self) -> MTCNN:
         return self.__face_detector
