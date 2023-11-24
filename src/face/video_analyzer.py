@@ -15,7 +15,7 @@ from ultralytics.engine.results import Results
 from PIL import Image
 
 from src.face.custom_tracker import CustomByteTracker
-from face.utilities import FR_SingletonInitializer
+from src.face.utilities import FR_SingletonInitializer
 
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
