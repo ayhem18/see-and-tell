@@ -32,5 +32,4 @@ class VisualFrame():
         self.probs = probs
         self.emotions = emotions
         self.scene = scene
-
-TEMP = 1
+        

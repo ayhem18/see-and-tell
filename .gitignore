@@ -32,3 +32,4 @@ src/scene/autoencoders/autoencoders.ipynb
 *.yaml
 *.jpeg
 *lightglue*
+test_env

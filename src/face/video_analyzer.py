@@ -144,14 +144,13 @@ class YoloAnalyzer(object):
         Returns:
             List[Results]: Each frame is associated with a Results object summarizing the frame's main results.
         """
-
         tracking_results = self.yolo.track(source=frames,
                             persist=True,
                             classes=[0],  # only detect people in the image
                             device=self.device,
                             show=False, 
                             tracker='bytetrack.yaml',
-                            verbose=False,)
+                            verbose=False)
         # self.tracker.track modifies the results in place.
         self.tracker.track(tracking_results)
         return tracking_results
@@ -194,8 +193,10 @@ class YoloAnalyzer(object):
             cut_fs = self.frame_signature(cut_track_results)
             # the final step is to add the value of the largest_id to each id in the frame signatures
             cut_fs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_fs]
+            
+            seq = [max(s[0]) for s in cut_fs if len(s[0]) > 0]
             # extract the currently large id
-            largest_id = max([max(s[0]) for s in cut_fs if len(s[0]) > 0]) # the condition is added since 'max' raise errors with empty lists.
+            largest_id = max(seq) if len(seq) != 0 else largest_id
             # save the results
             final_result.extend(cut_fs)
 
@@ -331,3 +332,6 @@ class YoloAnalyzer(object):
         face_ids = self._detect_encode(frames, person_ids, debug=debug)
 
         return frame_signs, face_ids
+
+
+TEMP = 1
