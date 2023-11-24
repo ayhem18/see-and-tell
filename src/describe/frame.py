@@ -1,117 +1,192 @@
 """Pipeline component that describes a frame in an image."""
 
-import argparse
-import os
+from typing import Any
 import torch
 import PIL
 import numpy as np
 
-from transformers import AutoProcessor, AutoModelForCausalLM
+from transformers import (
+    GitProcessor,
+    GitForCausalLM,
+    GenerationConfig,
+    GitConfig,
+    GitVisionConfig,
+)
+from transformers.utils import ModelOutput
+
 from ..log import get_pipeline_logger
+from pydantic import BaseModel, ConfigDict
+
+
+class CaptionOutput(BaseModel):
+    """Stores the output of captioning an image."""
+
+    image_path: str
+    caption_tokens: list[str]
+    caption_text: str
+    attentions_: Any
+
+    model_config: ConfigDict = ConfigDict(
+        # Allow tensors
+        arbitrary_types_allowed=True
+    )
+
+    def get_attention(self, id_: int, head: int = None, layer: int = None) -> torch.Tensor:
+        """Retrieves attention weights for specific word
+
+        If head is passed, averaged across layers. If layer is
+        pass, averaged across heads. If both, a single matrix is returned.
+        If none is passed, an averaged over both heads and layers is returned.
+
+        Args:
+            id_ (int): The id of the word to get attention for.
+            head (int, optional): The head to get attention for. Defaults to None.
+            layer (int, optional): The layer to get attention for. Defaults to None.
+
+        Returns:
+            torch.Tensor: The attention weights for the word.
+            If head is passed, the shape is (num_layers, num_patches).
+            If layer is passed, the shape is (num_heads, num_patches).
+            If both are passed, the shape is (num_patches).
+            If none are passed, the shape is (num_patches).
+        """
+        len_attentions = len(self.attentions_)
+        if len_attentions <= id_:
+            raise ValueError(f"word id is out of bounds {id_} >= {len_attentions}")
+
+        if head is not None and layer is not None:
+            return self.attentions_[id_][layer][head]
+
+        if head is not None:
+            return self.attentions_[id_][:, head, :].mean(dim=0)
+        if layer is not None:
+            return self.attentions_[id_][layer, :].mean(dim=0)
+
+        return self.attentions_[id_].mean(dim=0).mean(dim=0)
+
+
+
+class FrameDescriptorConfiguration(BaseModel):
+    """The configuration for the FrameDescriptor model."""
+
+    model_name: str = "microsoft/git-large-r-textcaps"
+    generation_config: GenerationConfig = None
+    use_gpu: bool = False
+    
+    model_config: ConfigDict = ConfigDict(
+        # Allow generation config
+        arbitrary_types_allowed=True
+    )
+
+    def __init__(self, **kwargs: Any):
+        """Initialize the FrameDescriptorConfiguration class.
+
+        Args:
+            **kwargs (Any): The configuration for the model.
+        """
+        super().__init__(**kwargs)
+        self.generation_config = GenerationConfig.from_pretrained(self.model_name)
+        
+        # Override the default generation config
+        self.generation_config.return_dict_in_generate = True
+        self.generation_config.output_attentions = True
 
 
 class FrameDescriptor:
     def __init__(
-            self,
-            model_name: str,
-            state_dict_path: str=None,
-            use_gpu=False,
-        ) -> None:
-        """Initialize the FrameDescriptor class.
+        self,
+        *,
+        config: FrameDescriptorConfiguration = None,
+        **kwargs,
+    ) -> None:
+        self._config = config or FrameDescriptorConfiguration(**kwargs)
 
-        Args:
-            model_name (str): The name of the model to use. Must be a model from the HuggingFace model hub.
-            state_dict_path (str, optional): The path to a state dict to load into the model. Defaults to None.
-        """
-        self.logger = get_pipeline_logger("FrameDescriptor", 'green')
-        self.descriptor_model = AutoModelForCausalLM.from_pretrained(model_name)
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.logger = get_pipeline_logger("FrameDescriptor", "green")
 
-        if state_dict_path:
-            self.descriptor_model.load_state_dict(torch.load(state_dict_path))
+        self.git_model = GitForCausalLM.from_pretrained(self._config.model_name)
+        self.git_config = GitConfig.from_pretrained(self._config.model_name)
+        self.git_vision_config = GitVisionConfig.from_pretrained(
+            self._config.model_name
+        )
+        self.git_processor = GitProcessor.from_pretrained(self._config.model_name)
+        
+        if self._config.use_gpu and torch.cuda.is_available():
+            self.git_model.cuda()
 
-        if use_gpu and torch.cuda.is_available():
-            self.descriptor_model.cuda()
+    def _get_text(self, outputs: ModelOutput) -> list[str]:
+        if 'sequences' not in outputs:
+            raise ValueError("The model output does not contain the 'sequences' key.")
+        
+        return self.git_processor.batch_decode(outputs.sequences, skip_special_tokens=True)
+    
+    def _get_attentions(self, outputs: ModelOutput) -> Any:
+        if 'attentions' not in outputs:
+            raise ValueError("The model output does not contain the 'attentions' key.")
+        
+        sequences = len(outputs.sequences)
+        sequence_length = len(outputs.attentions)
+        num_hidden_layers = self.git_config.num_hidden_layers
+        num_attention_heads = self.git_config.num_attention_heads
+        num_patches = (self.git_vision_config.image_size // self.git_vision_config.patch_size) ** 2
+        attentions = outputs.attentions
+        
+        att = torch.zeros(
+            sequences,
+            sequence_length,
+            num_hidden_layers,
+            num_attention_heads,
+            num_patches,
+        )
+        
+        for i in range(len(attentions)):
+            for k in range(len(attentions[i])):
+                for j in range(attentions[i][k].shape[0]):
+                    att[j][i][k] = attentions[i][k][j][:, -1, :num_patches]
+        
+                    
+        return att       
+        
 
-        self.use_gpu = use_gpu
-        self.logger.info(f"Initialized FrameDescriptor with model {model_name} and state_dict {state_dict_path}")
+    
+    def _get_words(self, outputs: ModelOutput) -> list[list[str]]:
+        return [
+            self.git_processor.tokenizer.convert_ids_to_tokens(
+                outputs.sequences[i], skip_special_tokens=True
+            ) for i in range(len(outputs.sequences))
+        ]
 
-    def describe_batch(self, images: list[str]) -> list[str]:
+    def describe_batch(self, images: list[str]) -> list[CaptionOutput]:
         """Describe a batch of images.
 
         Args:
             images (list[str]): The list of images to describe.
 
         Returns:
-            list[str]: The list of descriptions of the images.
+            CaptionsOutput
         """
         read_images = []
         for image in images:
-            read_images.append(
-                np.array(
-                    PIL.Image.open(image).convert("RGB")
-                )
-            )
+            read_images.append(np.array(PIL.Image.open(image).convert("RGB")))
 
-        self.logger.info(f"Processing batch of images {list(map(os.path.basename, images))}")
-        inputs = self.processor(images=read_images, return_tensors="pt", padding=True)
-        if self.use_gpu:
-            inputs = inputs.pixel_values.cuda()
-        else:
-            inputs = inputs.pixel_values
-        out = self.descriptor_model.generate(pixel_values=inputs, max_length=20, num_beams=5)
-        out = self.processor.batch_decode(out, skip_special_tokens=True)
-        return out
-    
+        inputs = self.git_processor(
+            images=read_images, 
+            return_tensors="pt", 
+            padding=True
+        )
 
-    def __call__(self, image: torch.Tensor | str) -> str:
-        """Generate a description of the image.
+        inputs = inputs.to("cuda") if self._config.use_gpu else inputs
+        generated = self.git_model.generate(
+            pixel_values=inputs['pixel_values'],
+            generation_config=self._config.generation_config,
+        )
+        attentions = self._get_attentions(generated)
+       
+        return [
+            CaptionOutput(
+                image_path=image,
+                caption_tokens=self._get_words(generated)[i],
+                caption_text=self._get_text(generated)[i],
+                attentions_=attentions[i],
+            ) for i, image in enumerate(images)
+        ]
 
-        Args:
-            image (torch.Tensor | str): The image to describe. Can be a tensor or a path to an image.
-            max_description_length (int, optional): The maximum length of the description. Defaults to 20.
-
-        Returns:
-            str: The description of the image.
-        """
-        __image = "tensor_image"
-        if isinstance(image, str):
-            # Load the image if path is specified
-            __image = "" + image
-            image = torch.Tensor(
-                np.array(
-                    PIL.Image.open(image).convert("RGB")
-                )
-            ).permute(2, 0, 1)
-                
-        self.logger.info(f"Processing image {__image}")
-        inputs = self.processor(images=image, return_tensors="pt")
-        if self.use_gpu:
-            inputs = inputs.to("cuda")
-        out = self.descriptor_model.generate(**inputs, num_beams=5)
-        out = self.processor.batch_decode(out, skip_special_tokens=True)[0]
-        self.logger.info(f"Processed {__image}. Generated description: {out}")
-        return out
-    
-
-if __name__ == "__main__":
-    # Example usage
-    argparser = argparse.ArgumentParser()
-    argparser.add_argument("path", type=str, help="The path to the image to describe.")
-    argparser.add_argument("--use-dir", action="store_true", help="Whether to use the path as a directory.")
-    args = argparser.parse_args()
-
-    frame_desc = FrameDescriptor(
-        model_name="microsoft/git-large-r-textcaps",
-        use_gpu=True
-    )
-
-    if args.use_dir:
-        # Describe all images in the directory
-        images = os.listdir(args.path)
-        images = list(map(lambda x: os.path.join(args.path, x), images))
-        descriptions = frame_desc.describe_batch(images)
-        for image, description in zip(images, descriptions):
-            print(f"Image {image} has description {description}")
-    else:
-        frame_desc(args.path)

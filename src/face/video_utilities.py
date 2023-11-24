@@ -111,5 +111,5 @@ def video_to_cuts(video_path: Union[str, Path],
             frame_cut_map[f] = i
         # delete the video after splitting it into cuts
         os.remove(file_name)
-
+    # {frame -> cut}
     return frame_cut_map
