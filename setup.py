@@ -4,7 +4,7 @@ from setuptools import setup
 with open("version.txt", mode="r", encoding="utf-8") as f:
     version = f.read().strip()
 
-
+with 
 
 setup(
     name="cntell",

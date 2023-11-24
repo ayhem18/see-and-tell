@@ -22,7 +22,7 @@ def ffmpeg_path(path: str):
     return path.replace("\\", "/")
 
 
-def split_on_frames(video: str, save_dir: str, fps=1) -> None:
+def split_on_frames(video: str, save_dir: str, fps=1) -> list[str]:
     """Splits a video into frames and saves them to a directory.
 
     Args:
