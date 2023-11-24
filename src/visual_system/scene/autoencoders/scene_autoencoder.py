@@ -41,7 +41,7 @@ sys.path.append(os.path.join(current, 'src'))
 
 from torch import nn
 # from src.scene.classifier.pretrained_conv import load_model, returnTF
-from src.scene.autoencoders.resnetFeatureExtractor import ResNetFeatureExtractor
+from src.visual_system.scene.autoencoders.resnetFeatureExtractor import ResNetFeatureExtractor
 import src.utilities.directories_and_files as dirf
 import src.utilities.pytorch_utilities as pu
 
