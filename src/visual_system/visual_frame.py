@@ -21,10 +21,16 @@ class VisualFrame():
             emotions (List[Union[str, int]]): The emotion associated with each face
             scene (str): The frame's scene
         """
-        self.characters = characters
-        self.bboxes = characters
-        self.probs = characters
-        self.emotions = characters
-        self.scene = characters
-
+        if not (isinstance(characters, Sequence) and isinstance(emotions, Sequence)):
+            raise ValueError(f"Expected characters and emotions to be sequences: characters: {characters}, emotions: {emotions}")
         
+        if len(characters) != len(emotions):
+            raise ValueError(f"The characters and emotions are supposed to have the same length: characeters :{len(characters), emotions: {len(emotions)}}")
+
+        self.characters = characters
+        self.bboxes = bboxes
+        self.probs = probs
+        self.emotions = emotions
+        self.scene = scene
+
+TEMP = 1

@@ -327,6 +327,7 @@ class YoloAnalyzer(object):
         # group each 'person' identified in the picture
         person_ids = self._identify(frame_signs=frame_signs)
         # time to encode each person ('id') detected by YOLO
+
         face_ids = self._detect_encode(frames, person_ids, debug=debug)
 
         return frame_signs, face_ids

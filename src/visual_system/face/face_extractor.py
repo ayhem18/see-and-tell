@@ -24,7 +24,7 @@ class FaceExtractor():
                           images: Sequence[Union[str, Path, np.ndarray, torch.Tensor]]) -> Union[List, torch.Tensor]:
         
         if isinstance(images, (str, Path)):
-            images = [images]
+            images = [Image.open(images)]
 
         elif isinstance(images, Sequence) and isinstance(images[0], (str, Path)):
             images = [Image.open(f) for f in images]
@@ -87,12 +87,36 @@ class FaceExtractor():
                       images: Sequence[Union[str, Path, np.ndarray, torch.Tensor]], 
                       keep_all: bool = True,
                       return_probs: bool = True) -> Tuple[np.ndarray, List[List[float]]]:
-        self.face_detector.keep_all = keep_all        
-        images = self._batch_preprocess(images)
-        output, probs = self.face_detector.detect(images)
-        # convert to a list: better than an array of arrays
-        output = output.tolist()
         
+        # so 
+        self.face_detector.select_largest = False        
+        images = self._batch_preprocess(images)
+
+        # since the 'detect' function does not support batch processing for images with different size
+        if any(img.size != images[0].size for img in images) :        
+            output, probs = list(map(list, zip(*[self.face_detector.detect(im) for im in images])))
+            # convert the result to a list
+        else:
+            # in this case, all the images are of the same size and it is possible to pass all data as a single batch             
+            output, probs = self.face_detector.detect(images)
+            # convert to a list: better than an array of arrays
+
+        if not keep_all:
+            output = [o[0].tolist() if o is not None else o for o in output ]
+            probs = [p[0] if p is not None else p for p in probs]        
+
+            for p in probs:
+                if not (isinstance(p, float) or p is None):
+                    raise TypeError(f"Make sure to return probabilities directly without a wrapper. Found: {p}")
+
+            for o in output:
+                if not ((isinstance(o, list) and len(o) == 4) or o is None):
+                    raise ValueError(f"Expected to return the bounding box as a list: Found: {o}")
+                
+        else:
+            output = [(o.tolist() if o is not None else o) for o in output]
+            probs = [(p.tolist() if p is not None else p) for p in probs]
+
         if return_probs:
             return output, probs
         

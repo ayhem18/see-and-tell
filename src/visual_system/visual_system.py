@@ -68,32 +68,52 @@ class VisualSystem:
             frame_cuts: Dict[Union[str, int], int], 
             debug: bool = False) -> List[VisualFrame]:
         # the first step is to determine the characters in the frames   
-        frames_signatures, person_ids = self.face_recognizer.recognize_faces(frames=frames, frame_cuts=frame_cuts)
+        frames_signatures, person_ids = self.face_recognizer.recognize_faces(frames=frames, 
+                                                                             frame_cuts=frame_cuts, 
+                                                                             debug=debug, 
+                                                                             display=debug)
 
         characters = [[person_ids[i] for i in ids] for ids, _, _ in frames_signatures]
 
         emotions = []
 
         # the next step is to crop the images using the FaceExtractor class
-        for frame_index, (ids, boxes, probs) in enumerate(frames_signatures):
+        for frame_index, (ids, boxes, _) in enumerate(frames_signatures):
+            if len(ids) == 0:
+                emotions.append([])        
+                continue
+
             frame_np = cv.imread(frames[frame_index])
-            # some frames might not have people in them per say
-            if len(ids) != 0:
-                # only crop persons associated with a character name
-                people = [crop_image(frame_np, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}, id: {i}') for 
-                          i, box in zip(ids, boxes)]
-                
-                # keep_all=False since there should be only one face in a 'person bounding box' 
-                face_boxes, probs = self.face_extractor.extract_bboxes(images=people, keep_all=False, return_probs=False)
-                face_boxes = [b for b, p in zip(face_boxes, probs) if p >= CONFIDENCE_THRESHOLD]        
 
-                faces = [crop_image(frame_np, bb_coordinates=box, debug=debug, 
-                                    title=f'frame: {frame_index}') for box in face_boxes]  
-                
-                emotions.extend(EmotionClassifier.classify(faces))
+            people = [crop_image(frame_np, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}, id: {i}') for 
+                        i, box in zip(ids, boxes)]
+                                
+            # keep_all=False since there should be only one face in a 'person bounding box' 
+            face_boxes, face_probs = self.face_extractor.extract_bboxes(images=people, keep_all=False, return_probs=True)
+            # certain person boxes will be assigned a None value (the model cannot detect face within the cropped bounding box)
 
-        scenes = SceneClassifier.classify(frames)
+            people_and_boxes =  [(im, [b[1], b[3], b[0], b[2]]) if (b is not None and p >= CONFIDENCE_THRESHOLD) else (None, None)
+                                 for b, p, im in zip(face_boxes, face_probs, people) ]
+
+            face_indices = [i for i in range(len(people_and_boxes)) if people_and_boxes[i][0] is not None]
+
+            faces = [crop_image(im, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}') for im, box in people_and_boxes if im is not None]
+            
+            # now I need to append the None values 
+            temp_emotions = self.emotion_classifier.classify(faces)
+            frame_emotions = [None for _ in range(len(people))]
+            
+            for i, e in enumerate(temp_emotions):
+                frame_emotions[face_indices[i]] = e 
+
+            emotions.append(frame_emotions)
+
+        scenes = self.scene_classifier.classify(frames)
         
+        assert len(scenes) == len(emotions) == len(characters) == len(frames_signatures), f"scenes: {len(scenes)}, emotions: {len(emotions)}, characters: {len(characters)}, signatures: {len(frames_signatures)}"
+
         # wrap up everything in a VisualFrame object. 
         return [VisualFrame(characters=c, bboxes=fs[1], probs=fs[2], emotions=e, scene=s) for c, fs, e, s in zip(characters, frames_signatures, emotions, scenes)]
     
+
+TEMP2 = 1
