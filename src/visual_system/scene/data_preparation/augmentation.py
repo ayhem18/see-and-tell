@@ -11,7 +11,9 @@ from typing import Union, Iterable, Tuple, List
 import cv2 as cv
 import numpy as np
 import torch
+from PIL import Image
 from ultralytics import YOLO
+from sklearn.cluster import MiniBatchKMeans
 
 current = os.path.dirname(os.path.realpath(__file__))
 
@@ -113,8 +115,8 @@ def human_data_augmentation(dataset_directory: Union[Path, str],
                                  )
     # the output directory must be empty
     des = dirf.process_save_path(output_directory,
-                                 file_ok=False,
-                                 condition=lambda x: len(os.listdir(x)) == 0)
+                                 file_ok=False)
+    
     # first read the files
     files = sorted([os.path.join(src, f) for f in os.listdir(src)], key=lambda x: os.path.basename(x))
 
@@ -149,17 +151,110 @@ def human_data_augmentation(dataset_directory: Union[Path, str],
             # or augment it
             if total_human_area / im_area <= max_human_area:
                 aug_im = human_image_augmentation(im, boxes=res, debug=debug)
-                # copy the original image and save the augmented one in the output directory
-                shutil.copy(os.path.join(im_file_name), os.path.join(des, os.path.basename(im_file_name)))
                 base_name, ext = os.path.splitext(os.path.basename(im_file_name))
                 aug_file_name = base_name + "_aug_" + ext
                 cv.imwrite(filename=os.path.join(des, aug_file_name), img=aug_im)
 
 
+
+# add image compression
+def quantize_image(image_path: Union[str, Path],
+                   num_clusters: int = 64, 
+                   return_org: bool = False):
+    image = cv.imread(image_path)
+    x = image.astype(np.uint8)
+    k_means = MiniBatchKMeans(num_clusters, compute_labels=False) # compute_labels to reduce the training time
+    k_means.fit(x.reshape(-1, 1))
+    labels = k_means.predict(x.reshape(-1, 1))
+    q_x = k_means.cluster_centers_[labels]
+    q_img = np.uint8(q_x.reshape(x.shape))
+    
+    if return_org:
+        return image, q_img
+    
+    return q_img
+
+# let's write a function to quantize an entire directory
+def data_quantization(dataset_directory: Union[str, Path], 
+                    output_directory: Union[str, Path],
+                    batch_size: int = 32,
+                    debug: bool = False,
+                    image_extensions: List[str] = None,
+                    num_clusters: int = 64):
+    # first process both directories
+    src = dirf.process_save_path(dataset_directory,
+                                 file_ok=False,
+                                 condition=lambda x: dirf.all_images(x, image_extensions=image_extensions)
+                                 )
+    # the output directory must be empty
+    des = dirf.process_save_path(output_directory,
+                                 file_ok=False)
+    
+    # first read the files
+    files = sorted([os.path.join(src, f) for f in os.listdir(src)], key=lambda x: os.path.basename(x))
+
+    for i in range(0, len(files), batch_size):
+        # extract the batch
+        batch = files[i: i + batch_size]
+        qs = [quantize_image(im, num_clusters=num_clusters) for im in batch]
+    
+        for im_file_name, q_img in zip(batch, qs):            
+            base_name, ext = os.path.splitext(os.path.basename(im_file_name))
+            aug_file_name = base_name + f"_quantized_k={num_clusters}" + ext
+            cv.imwrite(filename=os.path.join(des, aug_file_name), img=q_img)
+            if debug:
+                p = random()
+                if p <= 0.9:
+                    cv.imshow(f'quantized_frame_{base_name}', q_img)
+                    cv.waitKey()
+                    cv.destroyAllWindows()
+
+
 if __name__ == '__main__':
-    src = os.path.join(PARENT_DIR, 'src', 'build_dataset', 'tbbt_image_dataset', 'frames')
-    des = os.path.join(PARENT_DIR, 'src', 'scene', 'augmented_data')
-    human_data_augmentation(dataset_directory=src,
-                            output_directory=des,
+    # src = os.path.join(PARENT_DIR, 'src', 'build_dataset', 'tbbt_image_dataset', 'frames')
+    # des = os.path.join(PARENT_DIR, 'src', 'scene', 'augmented_data')
+    # human_data_augmentation(dataset_directory=src,
+    #                         output_directory=des,
+    #                         debug=False)
+
+
+    # train directory
+    train_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/unlabeled_data/train')
+    train_aug_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/unlabeled_data/train_extended')
+    os.makedirs(train_aug_dir, exist_ok=True)
+
+    # val directory
+    val_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/unlabeled_data/val')
+    val_aug_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/unlabeled_data/val_extended')
+    os.makedirs(val_aug_dir, exist_ok=True)
+
+    # quantize the validation split
+    # data_quantization(dataset_directory=val_dir, 
+    #                   output_directory=val_aug_dir, 
+    #                   batch_size=64, 
+    #                   debug=False, 
+    #                   num_clusters=32)
+    
+    # quantize the train split
+    data_quantization(dataset_directory=train_dir, 
+                      output_directory=train_aug_dir, 
+                      batch_size=64, 
+                      debug=False, 
+                      num_clusters=32)
+
+    human_data_augmentation(dataset_directory=train_dir, 
+                            output_directory=train_aug_dir, 
+                            batch_size=32, 
                             debug=False)
+
+    human_data_augmentation(dataset_directory=val_dir, 
+                            output_directory=val_aug_dir, 
+                            batch_size=32, 
+                            debug=False)
+
+
+
+    
+
+
 
