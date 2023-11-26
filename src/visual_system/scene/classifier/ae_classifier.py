@@ -187,7 +187,7 @@ class SceneClassifier(L.LightningModule):
         
         return model_output
 
-from data_loaders import create_dataloaders
+from src.visual_system.scene.classifier.data_loaders import create_dataloaders
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 

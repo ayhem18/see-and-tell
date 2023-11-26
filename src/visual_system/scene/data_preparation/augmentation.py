@@ -229,11 +229,11 @@ if __name__ == '__main__':
     os.makedirs(val_aug_dir, exist_ok=True)
 
     # quantize the validation split
-    # data_quantization(dataset_directory=val_dir, 
-    #                   output_directory=val_aug_dir, 
-    #                   batch_size=64, 
-    #                   debug=False, 
-    #                   num_clusters=32)
+    data_quantization(dataset_directory=val_dir, 
+                      output_directory=val_aug_dir, 
+                      batch_size=64, 
+                      debug=False, 
+                      num_clusters=32)
     
     # quantize the train split
     data_quantization(dataset_directory=train_dir, 
@@ -252,6 +252,13 @@ if __name__ == '__main__':
                             batch_size=32, 
                             debug=False)
 
+    dirf.copy_directories(src_dir=val_dir, 
+                          des_dir=val_aug_dir, 
+                          copy=True)
+
+    dirf.copy_directories(src_dir=train_dir, 
+                          des_dir=train_aug_dir, 
+                          copy=True)
 
 
     

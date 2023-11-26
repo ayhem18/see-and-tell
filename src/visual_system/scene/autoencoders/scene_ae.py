@@ -1,5 +1,8 @@
-"""This script contains the Denoising autoencoder used to extract features from the Big Bang Theory dataset 
 """
+This script contains the definition, training as well as utility code for the AutoEncoder trained on the Big Bang Theory dataset.
+"""
+
+
 import os
 import sys
 import lightning as L
@@ -38,54 +41,88 @@ PARENT_DIR = str(current)
 sys.path.append(str(current))
 sys.path.append(os.path.join(current, 'src'))
 
-
-import src.visual_system.scene.autoencoders.auxiliary as aux
-
 from torch import nn
 # from src.scene.classifier.pretrained_conv import load_model, returnTF
 from src.visual_system.scene.autoencoders.resnetFeatureExtractor import ResNetFeatureExtractor
 import src.utilities.directories_and_files as dirf
 import src.utilities.pytorch_utilities as pu
 
-
 seed_everything(69, workers=True)
 
-WANDB_PROJECT_NAME = 'cntell_ae_2'
+
+def deconvolution_block(input_channels,
+                        output_channels,
+                        kernel_size=4,
+                        stride=2,
+                        padding: int = 0,
+                        final_layer: bool = False):
+    layers = [
+        nn.ConvTranspose2d(in_channels=input_channels,
+                           out_channels=output_channels,
+                           kernel_size=kernel_size,
+                           stride=stride, 
+                           padding=padding),
+    ]
+    
+    if final_layer:
+        layers.extend([nn.Sigmoid()])
+    else:
+        layers.extend([nn.BatchNorm2d(output_channels), nn.LeakyReLU()])
+
+    return nn.Sequential(*layers)
+
+
+
+
+
+
+
+
+def returnTF(add_augment: bool = True):
+    # load the image transformer
+    tf = trn.Compose([
+        trn.Resize((224, 224)),
+        trn.TrivialAugmentWide(),
+        trn.ToTensor(),        
+    ]) if add_augment else trn.Compose([trn.Resize((224, 224)), trn.ToTensor()])
+    
+    return tf
 
 # let's define 2 decoders
+
 _decoder_14_14 = nn.Sequential(
-            *[aux.deconvolution_block(input_channels=1024, output_channels=256, stride=2, kernel_size=9),
+            *[deconvolution_block(input_channels=1024, output_channels=256, stride=2, kernel_size=9),
 
-              aux.deconvolution_block(input_channels=256, output_channels=128, stride=1, kernel_size=6),
+              deconvolution_block(input_channels=256, output_channels=128, stride=1, kernel_size=6),
 
-              aux.deconvolution_block(input_channels=128, output_channels=64, stride=1, kernel_size=7),
+              deconvolution_block(input_channels=128, output_channels=64, stride=1, kernel_size=7),
 
-              aux.deconvolution_block(input_channels=64, output_channels=32, stride=1, kernel_size=7),
+              deconvolution_block(input_channels=64, output_channels=32, stride=1, kernel_size=7),
 
-              aux.deconvolution_block(input_channels=32, output_channels=16, stride=2, kernel_size=9),
+              deconvolution_block(input_channels=32, output_channels=16, stride=2, kernel_size=9),
 
-              aux.deconvolution_block(input_channels=16, output_channels=3, stride=2, kernel_size=4, final_layer=True),
+              deconvolution_block(input_channels=16, output_channels=3, stride=2, kernel_size=4, final_layer=True),
               ])
 
 _decoder_7_7 = nn.Sequential(
     *[
-    aux.deconvolution_block(input_channels=2048, output_channels=1024, stride=1, kernel_size=5, padding=1),
+    deconvolution_block(input_channels=2048, output_channels=1024, stride=1, kernel_size=5, padding=1),
 
-    aux.deconvolution_block(input_channels=1024, output_channels=512, stride=1, kernel_size=5, padding=1), 
+    deconvolution_block(input_channels=1024, output_channels=512, stride=1, kernel_size=5, padding=1), 
 
-    aux.deconvolution_block(input_channels=512, output_channels=256, stride=1, kernel_size=4), 
+    deconvolution_block(input_channels=512, output_channels=256, stride=1, kernel_size=4), 
 
-    aux.deconvolution_block(input_channels=256, output_channels=128, stride=2, kernel_size=9),
+    deconvolution_block(input_channels=256, output_channels=128, stride=2, kernel_size=9),
 
-    aux.deconvolution_block(input_channels=128, output_channels=64, stride=1, kernel_size=6),
+    deconvolution_block(input_channels=128, output_channels=64, stride=1, kernel_size=6),
 
-    aux.deconvolution_block(input_channels=64, output_channels=32, stride=1, kernel_size=7),
+    deconvolution_block(input_channels=64, output_channels=32, stride=1, kernel_size=7),
 
-    aux.deconvolution_block(input_channels=32, output_channels=16, stride=1, kernel_size=7),
+    deconvolution_block(input_channels=32, output_channels=16, stride=1, kernel_size=7),
 
-    aux.deconvolution_block(input_channels=16, output_channels=8, stride=2, kernel_size=9),
+    deconvolution_block(input_channels=16, output_channels=8, stride=2, kernel_size=9),
 
-    aux.deconvolution_block(input_channels=8, output_channels=3, stride=2, kernel_size=4, final_layer=True)]
+    deconvolution_block(input_channels=8, output_channels=3, stride=2, kernel_size=4, final_layer=True)]
 )
 
 
@@ -93,28 +130,20 @@ class SceneDenoiseAE(L.LightningModule):
     _input_shape = (3, 224, 224)
 
     def __init__(self, 
-                 frozen_lr: float = 10 ** -5,
-                 trained_lr: float = 10 ** -1,
-                 gamma: float = 0.995,
                  architecture: int = 50, 
                  num_blocks: int = 3,
                  freeze: int = 2,
-                 num_vis_images: int = 5, 
+                 num_vis_images: int = 3, 
                  *args: Any, **kwargs: Any):
         # the first step is to load the resnet model pretrained on the place365 dataset
         super().__init__(*args, **kwargs)
-
-        # save the different learning rates and the coefficient of the exponential scheduler
-        self.frozen_lr = frozen_lr
-        self.trained_lr = trained_lr
-        self.gamma = gamma
-
         self.encoder = ResNetFeatureExtractor(architecture=architecture, 
                                               num_blocks=num_blocks, 
                                               freeze=freeze, 
                                               add_global_average=False)
         
-        o = self.encoder(torch.randn(1, 3, 224, 224).to(pu.get_module_device(self.encoder)))
+        o = self.encoder(torch.randn(1, 3, 224, 224))
+
         if o.shape not in [(1, 2048, 7, 7), (1, 1024, 14, 14)]:
             raise ValueError(f"Please make sure the encoder is chosen such that the output is in {[(1, 2048, 7, 7), (1, 1024, 14, 14)]}")
         
@@ -131,17 +160,16 @@ class SceneDenoiseAE(L.LightningModule):
 
     def _forward_pass(self, batch, loss_reduced: bool = True):
         x = batch
-        x_noise = aux.add_noise(x, noise_factor=random.random() * 0.4)
+        x_noise = add_noise(x, noise_factor=random.random() * 0.5)
         # make sure both x, and x_noise are of the expected dimensions
         batch_size = x.size(dim=0)
 
-        # if tuple(x_noise[0].shape) != self._input_shape:
-        #     raise ValueError(f"The input is not of the expected shape: expected {self._input_shape}. "
-        #                      f"Found: {tuple(x_noise[0].shape)}")
-
+        if tuple(x.shape) != ((batch_size,) + self._input_shape):
+            raise ValueError(f"The input is not of the expected shape: expected {self._input_shape}. "
+                             f"Found: {x[0].shape}")
         x_r = self.decoder(self.encoder(x_noise))
         # the loss is the sum of the Squared Error between the constructed image and the original image
-        mse_loss = F.mse_loss(x_r, x, reduction=('mean' if loss_reduced else 'none'))
+        mse_loss = F.mse_loss(x_r, x, reduction=('sum' if loss_reduced else 'none'))
         return mse_loss, x_noise, x_r
 
     def training_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
@@ -153,13 +181,13 @@ class SceneDenoiseAE(L.LightningModule):
         # applying such process on every batch in the validation set will significantly slow the training process.
         mse_losses, x_noise, x_r = self._forward_pass(batch, loss_reduced=False)
         # calculate the mse loss value
-        mse = torch.mean(mse_losses).cpu().item()
+        mse = torch.sum(mse_losses).cpu().item()
         # first log the validation loss
         self.log(name='val_loss', value=mse)  
 
         if batch_idx <= 2:
             # compute the loss for each image 
-            image_losses = torch.mean(mse_losses, dim=(1, 2, 3))
+            image_losses = torch.sum(mse_losses, dim=(1, 2, 3))
             # extract the images with the largest loss
             top_losses, top_indices = torch.topk(input=image_losses, k=self.num_vis_images, dim=-1)
 
@@ -184,8 +212,8 @@ class SceneDenoiseAE(L.LightningModule):
     def configure_optimizers(self):
         # since the encoder is pretrained, we would like to avoid significantly modifying its weights/
         # on the other hand, the rest of the AE should have higher learning rates.
-        parameters = [{"params": self.encoder.parameters(), "lr": self.frozen_lr},
-                      {"params": self.decoder.parameters(), "lr": self.trained_lr}]
+        parameters = [{"params": self.encoder.parameters(), "lr": 10 ** -5},
+                      {"params": self.decoder.parameters(), "lr": 10 ** -1}]
         # add a learning rate scheduler        
         optimizer = optim.Adam(parameters)
         # create lr scheduler
@@ -197,12 +225,51 @@ class SceneDenoiseAE(L.LightningModule):
         return x_r
 
 
+# this is the loading function used in the DatasetFolder pytorch implementation.
+def _load_sample(path):
+    with open(path, "rb") as f:
+        img = Image.open(f)
+        return img.convert("RGB")
+
+
+class GenerativeDS(Dataset):
+    def __init__(self,
+                 data_path: Union[str, Path],
+                 transformation: tr = None,
+                 image_extensions: Iterable[str] = None,
+                 ) -> None:
+        super().__init__()
+
+        self.data_path = dirf.process_save_path(data_path,
+                                                file_ok=False,
+                                                condition=lambda _: dirf.all_images(_,
+                                                                                    image_extensions=image_extensions))
+        self.file_names = sorted(os.listdir(self.data_path))
+        self.t = transformation
+
+    def __getitem__(self, index) -> Any:
+        sample_path = os.path.join(self.data_path, self.file_names[index])
+        sample = _load_sample(sample_path) if self.t is None else self.t(_load_sample(sample_path))
+        return sample
+
+    def __len__(self) -> int:
+        return len(self.file_names)
+
+
+def add_noise(x: torch.Tensor, noise_factor: float = 0.2) -> torch.Tensor:
+    # the first step is to add Guassian noise
+    x_noise = x + noise_factor * torch.randn(*x.shape).to(pu.get_module_device(x))
+    # make sure to clip the noise to the range [0, 1] # since the original image has pixel values in that range
+    # return x_noise
+    return torch.clip(x_noise, min=0, max=1)
+
+
 # we will need better checkpointing
 from lightning.pytorch.callbacks import ModelCheckpoint
 
+
 def train_ae(model: SceneDenoiseAE,
              train_dir: Union[str, Path],
-             configuration = None,
              val_dir: Union[str, Path] = None,
              log_dir: Union[str, Path] = None,
              image_extensions: Iterable[str] = None,
@@ -211,20 +278,6 @@ def train_ae(model: SceneDenoiseAE,
              num_epochs: int = 10, 
              add_augmentation: bool = True):
     
-    wandb.init(project=WANDB_PROJECT_NAME, config=configuration)
-    wandb_logger = WandbLogger(project=WANDB_PROJECT_NAME,
-                            log_model="all", 
-                            save_dir=log_dir, 
-                            name=run_name)
-
-    if configuration is not None:
-        model = SceneDenoiseAE(frozen_lr=wandb.config.frozen_lr,
-                               trained_lr=wandb.config.trained_lr,
-                               gamma=wandb.config.gamma,
-                               architecture=wandb.config.architecture,
-                               num_blocks=wandb.config.num_blocks, 
-                               freeze=wandb.config.freeze)
-
     # first process both directories
     train_dir = dirf.process_save_path(train_dir,
                                        file_ok=False,
@@ -237,25 +290,27 @@ def train_ae(model: SceneDenoiseAE,
     log_dir = dirf.process_save_path(log_dir, file_ok=False)
 
     # define the dataset 
-    model_transformation = aux.returnTF(add_augment=add_augmentation)
+    model_transformation = returnTF(add_augment=add_augmentation)
 
-    train_dataset = aux.GenerativeDS(data_path=train_dir,
+    train_dataset = GenerativeDS(data_path=train_dir,
                                  transformation=model_transformation)
 
     train_dl = DataLoader(dataset=train_dataset,
                           batch_size=batch_size,
                           shuffle=True,
                           pin_memory=True)
-    
     if val_dir is not None:
-        val_dl = DataLoader(dataset=aux.GenerativeDS(data_path=val_dir, 
-                                                     transformation=model_transformation),
+        val_dl = DataLoader(dataset=GenerativeDS(data_path=val_dir, transformation=model_transformation),
                             batch_size=batch_size,
                             shuffle=True,
                             pin_memory=True)
     else:
         val_dl = None
     
+    wandb_logger = WandbLogger(project='cntell_auto_encoder',
+                               log_model="all", 
+                               save_dir=log_dir, 
+                               name=run_name)
 
     checkpnt_callback = ModelCheckpoint(dirpath=log_dir, 
                                         save_top_k=5, 
@@ -283,64 +338,65 @@ def train_ae(model: SceneDenoiseAE,
                 )
 
 
-def sanity_check_model_selection(all_train_dir: Union[str, Path], 
-                       all_val_dir: Union[str, Path], 
-                       log_dir: Union[Path, str],
-                       portion: float = 0.2, 
-                       ):
-    
-    sanity_train = os.path.join(Path(all_train_dir).parent, 'sanity_train')
-    sanity_val = os.path.join(Path(all_val_dir).parent, 'sanity_val')
+def main(model, run_name: str):
+    wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
+
+    all_data = os.path.join(PARENT_DIR, 'src', 'scene', 'augmented_data')
+
+    train_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'train_dir')
+    val_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'val_dir')
 
     # let's split the data into train and test splits
-    train_data, _ = train_test_split(os.listdir(all_train_dir), test_size=portion, random_state=69)
-    val_data, _ = train_test_split(os.listdir(all_val_dir), test_size=portion, random_state=69)
+    train_data, val_data = train_test_split(os.listdir(all_data), test_size=0.1, random_state=69)
 
-    if not os.path.exists(sanity_train):
-        os.makedirs(sanity_train)
+    if not os.path.isdir(train_dir):
+        os.makedirs(train_dir)
         for f in train_data:
-            shutil.copyfile(os.path.join(all_train_dir, f), os.path.join(sanity_train, f))
+            shutil.copyfile(os.path.join(all_data, f), os.path.join(train_dir, f))
 
-    if not os.path.exists(sanity_val):
-        os.makedirs(sanity_val)
+    if not os.path.isdir(val_dir):
+        os.makedirs(val_dir)
         for f in val_data:
-            shutil.copyfile(os.path.join(all_val_dir, f), os.path.join(sanity_val, f))
+            shutil.copyfile(os.path.join(all_data, f), os.path.join(val_dir, f))
 
-    initial_model_selection_sweep_configuration = {
-        "name": "my-awesome-sweep",
-        "metric": {"name": "train_loss", "goal": "minimize"},
-        "method": 'bayes',
-        "parameters": {'architecture': {'value': 50}, 
-                       'num_blocks': {'values': [3, 4]},
-                       'freeze': {'values': [2, 3]},
-                       'frozen_lr': {'min': 10 ** -6, 'max': 10 ** -5}, 
-                       'trained_lr': {'max': 10  ** -1, 'min': 10 ** -3},
-                       'gamma': {'max': 0.999, 'min': 0.8}
-                       }
-    }
-    
-    sweep_id = wandb.sweep(sweep=initial_model_selection_sweep_configuration, 
-                        project=WANDB_PROJECT_NAME)
+    logs = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
+    os.makedirs(logs, exist_ok=True)
 
-    # create the function to be called by the wandb sweep agent
-    wandb.agent(sweep_id, 
-                function=lambda : train_ae(model=None,
-                                           configuration=initial_model_selection_sweep_configuration,
-                                           train_dir=sanity_train,
-                                           val_dir=sanity_val, 
-                                           log_dir=log_dir,
-                                           add_augmentation=False,
-                                           num_epochs=15, 
-                                           ), 
-                count=15)
+    # model = SceneDenoiseAE()
 
+    train_ae(
+            model=model,
+            train_dir=train_dir,
+             val_dir=val_dir,            
+             run_name=run_name,
+             batch_size=32,
+             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'),     
+             num_epochs=250,
+             add_augmentation=True)    
+
+
+def sanity_check(run_name):
+    wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
+    train_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'sanity_train')
+    val_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'val_dir')
+
+    logs = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
+    os.makedirs(logs, exist_ok=True)
+
+    model = SceneDenoiseAE(architecture=152, num_blocks=4, freeze=2)
+
+    train_ae(
+            model=model,
+            train_dir=train_dir,
+             val_dir=val_dir,            
+             run_name=run_name,
+             batch_size=32,
+             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'),     
+             num_epochs=400,
+             add_augmentation=False)
 
 if __name__ == '__main__':
-    wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
-    train_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene', 'unlabeled_data', 'train_extended')
-    val_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene', 'unlabeled_data', 'val_extended')
-    log_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
-
-    sanity_check_model_selection(all_train_dir=train_dir, 
-                                 all_val_dir=val_dir,
-                                 log_dir=log_dir)
+    # model = SceneDenoiseAE(architecture=152, num_blocks=4, freeze=2)
+    model = SceneDenoiseAE()
+    main(model, 'ae_sum_loss')
+    # sanity_check('ae_sanity_check_4')

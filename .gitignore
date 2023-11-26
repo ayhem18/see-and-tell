@@ -33,3 +33,4 @@ src/scene/autoencoders/autoencoders.ipynb
 *.jpeg
 *lightglue*
 test_env
+wandb
