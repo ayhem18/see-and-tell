@@ -45,36 +45,11 @@ from torch import nn
 
 from src.visual_system.scene.autoencoders.resnetFeatureExtractor import ResNetFeatureExtractor
 from src.visual_system.scene.classifier.classification_head import ExponentialClassifier
+import src.visual_system.scene.autoencoders.auxiliary as aux
 import src.utilities.directories_and_files as dirf
 import src.utilities.pytorch_utilities as pu
 
 
-
-def augment(x) -> torch.Tensor:
-    p = random.random()
-    
-    # cropping the image
-    if p < 0.33:
-        return trn.RandomResizedCrop(size=(180, 180), antialias=True)(x)
-    
-    # flipping the image
-    elif p < 0.66:
-        return trn.RandomVerticalFlip(p=0.5)(x)
-    
-    # rotation
-    # choose the angle
-    return trn.RandomRotation(degrees=15)(x)
-
-
-def returnTF(add_augment: bool = True):
-    # load the image transformer
-    tf = trn.Compose([
-        trn.Resize((224, 224)),
-        lambda x: augment(x), 
-        trn.ToTensor(),        
-    ]) if add_augment else trn.Compose([trn.Resize((224, 244)), trn.ToTensor()])
-    
-    return tf
 
 
 class SceneClassifier(L.LightningModule):
@@ -83,6 +58,8 @@ class SceneClassifier(L.LightningModule):
     def __init__(self, 
                  num_classes: int, 
                  encoder: nn.Module,
+                 learning_rate: float = 10 ** -3, 
+                 gamma: float = 0.995,
                  num_classification_layers: int = 3,
                  dropout=None,
                  num_vis_images: int = 3, 
@@ -90,6 +67,9 @@ class SceneClassifier(L.LightningModule):
         # the first step is to load the resnet model pretrained on the place365 dataset
         super().__init__(*args, **kwargs)
         self.encoder = encoder  
+
+        self.lr = learning_rate
+        self.gamma = gamma
 
         # make sure to freeze the encoder
         for p in self.encoder.parameters():
@@ -107,18 +87,12 @@ class SceneClassifier(L.LightningModule):
                                           
         # the number of images to visualize in a validation step
         self.num_vis_images = num_vis_images
-        # shouldn't call save_hyperparameters() since, the 'conv_block' object is a nn.Module and should be quite heavy in size
         self.save_hyperparameters()
         self.log_data = pd.DataFrame(data=[], columns=['image', 'predictions', 'labels', 'val_loss', 'epoch'])
 
-
     def _forward_pass(self, batch, loss_reduced: bool = True):
         x, y = batch
-
-        head_input = torch.squeeze(self.avgpool(self.encoder(x)))
-        # first step is to get the model's output
-        model_output = self.head(head_input)
-
+        model_output = self.forward(x, return_preds=False)
         # calculate the loss
         loss_obj = F.cross_entropy(model_output, y, reduction=('mean' if loss_reduced else 'none'))
 
@@ -165,12 +139,12 @@ class SceneClassifier(L.LightningModule):
         # since the encoder is pretrained, we would like to avoid significantly modifying its weights/
         # on the other hand, the rest of the AE should have higher learning rates.
 
-        parameters = [{"params": self.avgpool.parameters(), "lr": 10 ** -2},
-                      {"params": self.head.parameters(), "lr": 10 ** -2}]
+        parameters = [{"params": self.avgpool.parameters(), "lr": self.lr},
+                      {"params": self.head.parameters(), "lr": self.lr}]
         # add a learning rate scheduler        
-        optimizer = optim.Adam(parameters, lr=10 ** -2)
+        optimizer = optim.Adam(parameters, lr=self.lr)
         # create lr scheduler
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.995)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=self.gamma)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
 
@@ -213,12 +187,13 @@ def train_classifier(model: SceneClassifier,
 
 
     # define the dataset 
-    model_transformation = returnTF(add_augment=add_augmentation)
+    model_transformation = aux.returnTF(add_augment=add_augmentation)
 
 
     train_dl, val_dl, _ = create_dataloaders(train_dir=train_dir, 
                                           val_dir=val_dir, 
-                                          train_transform=model_transformation, 
+                                          train_transform=model_transformation,
+                                          val_transform=aux.returnTF(add_augment=False), 
                                           batch_size=batch_size, 
                                           num_workers=0)
     
@@ -242,7 +217,7 @@ def train_classifier(model: SceneClassifier,
                         default_root_dir=log_dir,
                         
                         max_epochs=num_epochs,
-                        check_val_every_n_epoch=5,
+                        check_val_every_n_epoch=3,
 
                         deterministic=True,
                         callbacks=[checkpnt_callback])
@@ -256,25 +231,13 @@ def train_classifier(model: SceneClassifier,
 
 def main(model, 
          run_name: str, 
-         num_epochs, 
+         num_epochs:int, 
          add_augment:bool):
     wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
-
-    all_data = os.path.join(SCRIPT_DIR, 'labeled_data')
-    train_dir = os.path.join(SCRIPT_DIR, 'labeled_train_dir')
-    val_dir = os.path.join(SCRIPT_DIR, 'labeled_val_dir')
-
-    os.makedirs(train_dir, exist_ok=True)
-    os.makedirs(val_dir, exist_ok=True)
-
-    if len(os.listdir(train_dir)) == 0:
-        dirf.copy_directories(src_dir=all_data, des_dir=train_dir, copy=True)        
-        # now partition the data into 2 parts
-        dirf.dataset_portion(directory_with_classes=train_dir, 
-                             destination_directory=val_dir, 
-                             copy=False, 
-                             portion=0.1)
     
+    train_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/labeled_data/train_extended')
+    val_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/labeled_data/val')
+
     logs = os.path.join(SCRIPT_DIR, 'classifier_runs')
     os.makedirs(logs, exist_ok=True)
 
@@ -296,7 +259,6 @@ def sanity_check(run_name):
 
     logs = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
     os.makedirs(logs, exist_ok=True)
-
 
     train_classifier(
             model=model,
@@ -331,4 +293,4 @@ if __name__ == '__main__':
 
     print(model)
 
-    main(model=model, run_name='first_run', num_epochs=150, add_augment=False)
+    # main(model=model, run_name='first_run', num_epochs=150, add_augment=False) 
