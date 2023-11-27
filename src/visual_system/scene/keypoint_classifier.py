@@ -16,6 +16,7 @@ from pathlib import Path
 from collections import defaultdict
 from shutil import copyfile
 from _collections_abc import Sequence
+from tqdm import tqdm
 
 current = os.path.dirname(os.path.realpath(__file__))
 
@@ -36,7 +37,6 @@ from lightglue.utils import load_image, rbd
 from lightglue import viz2d
 
 
-
 def select_reference_files(data_directory: Union[str, Path],
                            output_directory: Union[str, Path],
                            extractor: SuperPoint,
@@ -46,10 +46,10 @@ def select_reference_files(data_directory: Union[str, Path],
                            debug: bool = False
                            ) -> None:
     # process the directory path
-    data_dir = dirf.process_save_path(save_path=data_directory, file_ok=True, condition=dirf.all_images)
+    data_dir = dirf.process_save_path(save_path=data_directory, file_ok=False)
     output_dir = dirf.process_save_path(save_path=output_directory, file_ok=False)
 
-    files = [os.path.join(data_dir, f) for f in os.listdir(data_dir)]
+    files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
 
     for i in range(0, len(files), batch_size):
         
@@ -89,17 +89,21 @@ def select_reference_files(data_directory: Union[str, Path],
                     cv.destroyAllWindows()    
 
                     good_input = False
-                    
+
+
                     while not good_input:
                         user_input = input((f"Please choose the class for which this image can server as a reference\n"
                                             f"\n Please enter: penny, Leo, hall, or none\n"))
 
                         good_input = user_input.lower() in ['penny', 'leo', 'hall', 'none']
-
-                        if good_input and user_input != 'none':
+                        
+                        if good_input:
                             cls_folder = os.path.join(output_dir, user_input) 
                             os.makedirs(cls_folder, exist_ok=True)
-                            shutil.copyfile(src=rf_im, dst=os.path.join(cls_folder, os.path.basename(rf_im)))
+                            if user_input == 'none' or os.path.basename(rf_im) in os.listdir(cls_folder):
+                                os.remove(rf_im)
+                            else:
+                                shutil.move(src=rf_im, dst=os.path.join(cls_folder, os.path.basename(rf_im)))
 
 
         except Exception as e:
@@ -111,7 +115,7 @@ def select_reference_files(data_directory: Union[str, Path],
 def _keypoints_comparison(
         extractor: SuperPoint,
         matcher: LightGlue,
-        reference_feats: Dict[str, torch.Tensor],
+        # reference_feats: Dict[str, torch.Tensor],
         images: List[str],
         resize: Union[Tuple, int],
         display: bool = False,
@@ -122,17 +126,16 @@ def _keypoints_comparison(
     device = device if device is not None else ('cuda' if torch.cuda.is_available() else 'cpu')
     
     # make sure to call the length operator on one of the keys (since reference_feats is a dictionary)
-    num_references = len(reference_feats['descriptors'])
+    num_references = len(references)
     num_images = len(images)
     # the original approach was to simple create an 'images' and 'references; tensors of length: num_references * num_images
     # as this step might be delayed
     
     # first let's get the descriptors and keypoints for each 
     images = torch.stack([load_image(im, resize=resize) for im in images]).to(device)
+    references = torch.stack([load_image(im, resize=resize) for im in references]).to(device)
 
-    if references is not None:
-        references = torch.stack([load_image(im, resize=resize) for im in images]).to(device)
-
+    reference_feats = extractor.forward(data={"image": references})
     image_feats = extractor.forward(data={"image": images})
     
     # extract both the descriptors and the keypoints
@@ -186,7 +189,7 @@ def _keypoints_comparison(
             viz2d.plot_matches(m_kpts0, m_kpts1, color="lime", lw=0.2)
 
     # the number of matches between the given images and the reference ones.
-    return [torch.sum(s >= 0.75) for index, s in enumerate(scores)]
+    return [torch.sum(s >= 0.65) for index, s in enumerate(scores)]
 
 
 class KeyPointClassifier:
@@ -233,11 +236,11 @@ class KeyPointClassifier:
                  references: Union[Dict, str, Path],
                  resize: Union[Tuple[int, int], int]=None, 
                  device: str = None, 
-                 batch_size: int = 4,
-                 referenes_threshold: float = 0.2,  
-                 classification_treshold: int = 20) -> None:
+                 batch_size: int = 2,
+                 referenes_threshold: float = 0.15,  
+                 classification_treshold: int = 15) -> None:
         
-        device = ('cuda' if torch.cuda.is_available() else 'cpu') if device is None else device
+        self.device = ('cuda' if torch.cuda.is_available() else 'cpu') if device is None else device
         self.classification_treshold = classification_treshold
         self.batch_size = batch_size
         
@@ -249,41 +252,43 @@ class KeyPointClassifier:
         self.references_location_map = self._build_references(references=references)
         
         # initialize the extractor and the matcher
-        self.extractor = SuperPoint(max_num_keypoints=512).eval().cuda()  # load the extractor
-        self.matcher = LightGlue(features='superpoint', width_confidence=-1, filter_treshold=0.7).eval().cuda()        
+        
+        self.extractor = SuperPoint(max_num_keypoints=512).eval().to(self.device)  # load the extractor
+        self.matcher = LightGlue(features='superpoint', width_confidence=-1, filter_treshold=0.7).eval().to(self.device)
         self.references_threshold = referenes_threshold
 
         # let's save the feats of the reference images
         self.references_feats = {}
-        for cls_name, imgs in self.references_location_map.items():
-            imgs_tensors = torch.stack([load_image(r, resize=resize) for r in imgs]).to(device)
-            imgs_feats = self.extractor.forward(data={"image": imgs_tensors})            
-            self.references_feats[cls_name] = imgs_feats
+        # for cls_name, imgs in self.references_location_map.items():
+        #     imgs_tensors = torch.stack([load_image(r, resize=resize) for r in imgs]).to(self.device)
+        #     imgs_feats = self.extractor.forward(data={"image": imgs_tensors})            
+        #     self.references_feats[cls_name] = imgs_feats
         # now the classifier is ready to go
+
 
     def classify(self, frames: List[str]) -> List[Optional[str]]:
         predictions = []
 
-        for i in range(0, len(frames), self.batch_size):
+        for i in tqdm(range(0, len(frames), self.batch_size)):
             # create the data batch
             batch = frames[i: i + self.batch_size]
             
             batch_classification_map = defaultdict(lambda : {})
 
-            for cls_name, cls_ref_feats in self.references_feats.items():
-
-                threshold = int(math.ceil(len(cls_ref_feats) * self.references_threshold))
+            for cls_name, cls_refs in self.references_location_map.items():
+                threshold = int(math.ceil(len(cls_refs) * self.references_threshold))
 
                 images_score = defaultdict(lambda: 0)
 
-                for j in range(0, len(cls_ref_feats), self.batch_size):
-                    ref_batch = {k: v[j: j + self.batch_size] for k, v in cls_ref_feats.items()}
-
+                for j in range(0, len(cls_refs), self.batch_size):
+                    ref_batch = cls_refs[j: j + self.batch_size]
                     results = _keypoints_comparison(extractor=self.extractor,
                                                     matcher=self.matcher, 
-                                                    reference_feats=ref_batch,
+                                                    # reference_feats=ref_batch,
+                                                    references=ref_batch,
                                                     images=batch,
-                                                    resize=self.resize)
+                                                    resize=self.resize, 
+                                                    device=self.device)
                     
                     for pair_index, matches in enumerate(results):
                         # diving pair_index by the number of references produces the
@@ -311,29 +316,36 @@ class KeyPointClassifier:
 
 
 if __name__ == '__main__':
-    # current = os.path.dirname(os.path.realpath(__file__))
-    # classifier = KeyPointClassifier(references=os.path.join(PARENT_DIR, 'src', 'build_dataset/test/references'), 
-    #                                 resize=(480, 480))
-
-    # data_path = os.path.join(PARENT_DIR, 'src', 'build_dataset/test/data')
-    # frames = [os.path.join(data_path, f) for f in os.listdir(data_path)]
-    # preds = classifier.classify(frames=frames)
-
     current = os.path.dirname(os.path.realpath(__file__))
-    labeled_data_dir = os.path.join(PARENT_DIR, 
-                                    'src', 
-                                    'visual_system', 
-                                    'scene',
-                                    'unlabeled_data', 
-                                    'sanity_train')
-    
-    extractor = SuperPoint(max_num_keypoints=512).eval().cuda()  # load the extractor
+    classifier = KeyPointClassifier(references=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene', 'cls_references'), 
+                                    resize=(480, 480), batch_size=2)
 
-    select_reference_files(data_directory=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene','cls_references'), 
-                           output_directory=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene','cls_references'),
-                           extractor=extractor, 
-                           min_kpnt_confidence=0.40, 
-                           min_num_kpnts=60,
-                           batch_size=4,
-                           debug=True)
+    data_path = os.path.join(PARENT_DIR, 'src', "visual_system/scene/labeled_data/Penny's apartment")
+    frames = [os.path.join(data_path, f) for f in os.listdir(data_path)]
+    preds = classifier.classify(frames=frames)
+
+    assert len(preds) == len(frames), f"The number of frames and predictions do not match: preds: {len(preds)}, frames: {len(frames)}"
+
+    for f, p in zip(frames, preds):
+        cv.imshow(f'frame: {p}', cv.imread(f))
+        cv.waitKey()
+        cv.destroyAllWindows()
+
+    # current = os.path.dirname(os.path.realpath(__file__))
+    # labeled_data_dir = os.path.join(PARENT_DIR, 
+    #                                 'src', 
+    #                                 'visual_system', 
+    #                                 'scene',
+    #                                 'unlabeled_data', 
+    #                                 'sanity_train')
+    
+    # extractor = SuperPoint(max_num_keypoints=512).eval().cuda()  # load the extractor
+
+    # select_reference_files(data_directory=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene','cls_references'), 
+    #                        output_directory=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene','cls_references'),
+    #                        extractor=extractor, 
+    #                        min_kpnt_confidence=0.40, 
+    #                        min_num_kpnts=60,
+    #                        batch_size=4,
+    #                        debug=True)
      
