@@ -211,7 +211,10 @@ def train_ae(model: SceneDenoiseAE,
              num_epochs: int = 10, 
              add_augmentation: bool = True):
     
-    wandb.init(project=WANDB_PROJECT_NAME, config=configuration)
+    wandb.init(project=WANDB_PROJECT_NAME, 
+               config=configuration, 
+               name=run_name)
+    
     wandb_logger = WandbLogger(project=WANDB_PROJECT_NAME,
                             log_model="all", 
                             save_dir=log_dir, 
@@ -262,7 +265,7 @@ def train_ae(model: SceneDenoiseAE,
                                         monitor="val_loss",
                                         mode='min', 
                                         # save the checkpoint with the epoch and validation loss
-                                        filename='autoencoder-{epoch:02d}-{val_loss:06d}')
+                                        filename='autoencoder-{epoch:02d}-{val_loss:06f}')
 
     # define the trainer
     trainer = L.Trainer(accelerator='gpu',
@@ -286,6 +289,7 @@ def train_ae(model: SceneDenoiseAE,
 def sanity_check_model_selection(all_train_dir: Union[str, Path], 
                        all_val_dir: Union[str, Path], 
                        log_dir: Union[Path, str],
+                       run_name,
                        portion: float = 0.2, 
                        ):
     
@@ -293,8 +297,8 @@ def sanity_check_model_selection(all_train_dir: Union[str, Path],
     sanity_val = os.path.join(Path(all_val_dir).parent, 'sanity_val')
 
     # let's split the data into train and test splits
-    train_data, _ = train_test_split(os.listdir(all_train_dir), test_size=portion, random_state=69)
-    val_data, _ = train_test_split(os.listdir(all_val_dir), test_size=portion, random_state=69)
+    _, train_data = train_test_split(os.listdir(all_train_dir), test_size=portion, random_state=69)
+    _, val_data = train_test_split(os.listdir(all_val_dir), test_size=portion, random_state=69)
 
     if not os.path.exists(sanity_train):
         os.makedirs(sanity_train)
@@ -330,7 +334,8 @@ def sanity_check_model_selection(all_train_dir: Union[str, Path],
                                            val_dir=sanity_val, 
                                            log_dir=log_dir,
                                            add_augmentation=False,
-                                           num_epochs=15, 
+                                           num_epochs=15,
+                                           run_name=run_name 
                                            ), 
                 count=15)
 
@@ -343,4 +348,12 @@ if __name__ == '__main__':
 
     sanity_check_model_selection(all_train_dir=train_dir, 
                                  all_val_dir=val_dir,
-                                 log_dir=log_dir)
+                                 log_dir=log_dir, 
+                                 run_name='arch_selection')
+
+    # train_ae(SceneDenoiseAE(), 
+    #          train_dir=os.path.join(Path(train_dir).parent, 'sanity_train'), 
+    #          val_dir=os.path.join(Path(val_dir).parent, 'sanity_val'),
+    #          log_dir=log_dir, 
+    #          num_epochs=1, 
+    #          )
