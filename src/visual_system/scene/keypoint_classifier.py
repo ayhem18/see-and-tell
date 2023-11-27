@@ -7,7 +7,8 @@ import os, sys
 import torch
 import math
 import numpy as np 
-import gc
+import cv2 as cv
+import shutil
 
 from PIL import Image
 from typing import Union, List, Tuple, Dict, Optional
@@ -28,10 +29,83 @@ sys.path.append(os.path.join(current, 'src'))
 
 
 import src.utilities.directories_and_files as dirf
+import src.utilities.pytorch_utilities as pu
 
 from lightglue import LightGlue, SuperPoint
 from lightglue.utils import load_image, rbd
 from lightglue import viz2d
+
+
+
+def select_reference_files(data_directory: Union[str, Path],
+                           output_directory: Union[str, Path],
+                           extractor: SuperPoint,
+                           min_kpnt_confidence: float = 0.4, 
+                           min_num_kpnts: int = 20, 
+                           batch_size: int = 8, 
+                           debug: bool = False
+                           ) -> None:
+    # process the directory path
+    data_dir = dirf.process_save_path(save_path=data_directory, file_ok=True, condition=dirf.all_images)
+    output_dir = dirf.process_save_path(save_path=output_directory, file_ok=False)
+
+    files = [os.path.join(data_dir, f) for f in os.listdir(data_dir)]
+
+    for i in range(0, len(files), batch_size):
+        
+        try:
+            # extract the data and save them as a tensor
+            batch = torch.stack([load_image(f, resize=(480, 480)) for f in files[i: i + batch_size]]).to(pu.get_module_device(extractor))
+            # pass through the extractor
+            try:
+                
+                image_feats = extractor.forward(data={"image": batch})
+                kpnts, scores = image_feats['keypoints'].detach().cpu().numpy(), image_feats['keypoint_scores'].detach().cpu().numpy()
+
+            except ValueError:
+                # reaching this point means that the model does not detect a minimal number of keypoints 
+                # on certain images
+                image_feats = [extractor.forward(data={"image": i}) for i in batch]
+                kpnts = [torch.squeeze()(im_f['keypoints']).detach().cpu().numpy() for im_f in image_feats]
+                scores = [torch.squeeze()(im_f['keypoint_scores']).detach().cpu().numpy() for im_f in image_feats]
+
+            # extract the reference images: don't forget to add the batch size into the indexing process
+            ref_images = [(file_index, files[i + file_index]) for file_index, s in enumerate(scores) if np.sum(s >= min_kpnt_confidence).item() >= min_num_kpnts]
+
+            for file_index, rf_im in ref_images: 
+                im = cv.imread(rf_im)
+                # save the reference image
+                cv.imwrite(os.path.join(output_dir, os.path.basename(rf_im)), im)
+                
+                if debug:                    
+                    # make sure to display the reference image
+                    for x, y in kpnts[file_index]:
+                        # draw the points
+                        cv.circle(im, center=(int(x), int(y)), radius=1, color=(0, 255, 0), thickness=2)
+                    
+                    # display the image
+                    cv.imshow('reference image', im)
+                    cv.waitKey()
+                    cv.destroyAllWindows()    
+
+                    good_input = False
+                    
+                    while not good_input:
+                        user_input = input((f"Please choose the class for which this image can server as a reference\n"
+                                            f"\n Please enter: penny, Leo, hall, or none\n"))
+
+                        good_input = user_input.lower() in ['penny', 'leo', 'hall', 'none']
+
+                        if good_input and user_input != 'none':
+                            cls_folder = os.path.join(output_dir, user_input) 
+                            os.makedirs(cls_folder, exist_ok=True)
+                            shutil.copyfile(src=rf_im, dst=os.path.join(cls_folder, os.path.basename(rf_im)))
+
+
+        except Exception as e:
+            print(e)
+            print("error raised !!")
+            continue        
 
 
 def _keypoints_comparison(
@@ -113,7 +187,6 @@ def _keypoints_comparison(
 
     # the number of matches between the given images and the reference ones.
     return [torch.sum(s >= 0.75) for index, s in enumerate(scores)]
-
 
 
 class KeyPointClassifier:
@@ -236,11 +309,31 @@ class KeyPointClassifier:
 
         return predictions
 
-if __name__ == '__main__':
-    current = os.path.dirname(os.path.realpath(__file__))
-    classifier = KeyPointClassifier(references=os.path.join(PARENT_DIR, 'src', 'build_dataset/test/references'), 
-                                    resize=(480, 480))
 
-    data_path = os.path.join(PARENT_DIR, 'src', 'build_dataset/test/data')
-    frames = [os.path.join(data_path, f) for f in os.listdir(data_path)]
-    preds = classifier.classify(frames=frames)
+if __name__ == '__main__':
+    # current = os.path.dirname(os.path.realpath(__file__))
+    # classifier = KeyPointClassifier(references=os.path.join(PARENT_DIR, 'src', 'build_dataset/test/references'), 
+    #                                 resize=(480, 480))
+
+    # data_path = os.path.join(PARENT_DIR, 'src', 'build_dataset/test/data')
+    # frames = [os.path.join(data_path, f) for f in os.listdir(data_path)]
+    # preds = classifier.classify(frames=frames)
+
+    current = os.path.dirname(os.path.realpath(__file__))
+    labeled_data_dir = os.path.join(PARENT_DIR, 
+                                    'src', 
+                                    'visual_system', 
+                                    'scene',
+                                    'unlabeled_data', 
+                                    'sanity_train')
+    
+    extractor = SuperPoint(max_num_keypoints=512).eval().cuda()  # load the extractor
+
+    select_reference_files(data_directory=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene','cls_references'), 
+                           output_directory=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene','cls_references'),
+                           extractor=extractor, 
+                           min_kpnt_confidence=0.40, 
+                           min_num_kpnts=60,
+                           batch_size=4,
+                           debug=True)
+     

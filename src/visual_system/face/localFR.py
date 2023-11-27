@@ -10,9 +10,9 @@ from _collections_abc import Sequence
 from collections import Counter
 
 from src.face.embeddings import build_classes_embeddings, read_embeddings
-from src.face.utilities import REPORT_THRESHOLD
-from src.face.helper_functions import cosine_similarity
-from src.face.video_analyzer import YoloAnalyzer
+from src.visual_system.face.utilities import REPORT_THRESHOLD
+from src.visual_system.face.helper_functions import cosine_similarity
+from src.visual_system.face.video_analyzer import YoloAnalyzer
 
 
 class FaceMatcher:
@@ -124,8 +124,7 @@ class FaceRecognizer:
                 # thus these ids won't be present in the ids_labels (it is an iff relation)                
                 if i not in ids_labels:
                     continue
-
-                y0, y1, x0, x1 = b
+                x0, y0, x1, y1 = b
                 cv.rectangle(f_np, (int(x0), int(y0)), (int(x1), int(y1)), (0, 0, 255), 2)
                 # add the label
                 

@@ -14,9 +14,9 @@ from ultralytics import YOLO
 from ultralytics.engine.results import Results
 from PIL import Image
 
-from src.face.custom_tracker import CustomByteTracker
-from src.face.utilities import FR_SingletonInitializer
-
+from src.visual_system.face.custom_tracker import CustomByteTracker
+from src.visual_system.face.utilities import FR_SingletonInitializer
+from src.visual_system.tracking.sort import Sort
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -144,15 +144,37 @@ class YoloAnalyzer(object):
         Returns:
             List[Results]: Each frame is associated with a Results object summarizing the frame's main results.
         """
-        tracking_results = self.yolo.track(source=frames,
-                            persist=True,
-                            classes=[0],  # only detect people in the image
-                            device=self.device,
-                            show=False, 
-                            tracker='bytetrack.yaml',
-                            verbose=False)
-        # self.tracker.track modifies the results in place.
-        self.tracker.track(tracking_results)
+        # the idea here is to initialize a sort Track object
+        # get the bounding boxes for each frame using YOLO.
+
+        tracker = Sort()
+
+        # pass the frame to yolo
+        detection_results = self.yolo.predict(source=frames,
+                                              classes=[0],
+                                              device=self.device, 
+                                              show=False,
+                                              verbose=False)
+        tracking_results = []
+
+        for res in detection_results:
+            # consider the case where there no boxes are detected
+            if res.boxes is None:
+                tracker_input =  np.empty(np.empty((0, 5)))
+            else:
+                boxes = res.boxes.xyxy.cpu().numpy()
+                probs = res.boxes.conf.cpu().numpy()
+                if boxes.ndim == 1:
+                    boxes = np.expand_dims(boxes, axis=0)
+                if probs.ndim == 1:
+                    probs = np.expand_dims(probs, axis=-1)
+                                         
+                # concatenate both of them
+                tracker_input = np.concatenate([boxes, probs], axis=1)
+            
+            # update the tracker
+            tracking_results.append(tracker.update(tracker_input))
+
         return tracking_results
 
 

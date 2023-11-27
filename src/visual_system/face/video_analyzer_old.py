@@ -14,8 +14,7 @@ from ultralytics import YOLO
 from ultralytics.engine.results import Results
 from PIL import Image
 
-# from src.face.custom_tracker import CustomByteTracker
-from src.visual_system.tracking.sort import Sort, convert_x_to_bbox
+from src.face.custom_tracker import CustomByteTracker
 from face.utilities import FR_SingletonInitializer
 
 
@@ -39,16 +38,10 @@ def xywh_converter(xywh: Sequence[int, int, int, int]) -> \
 def crop_image(image: np.ndarray,
                bb_coordinates: Tuple[int, int, int, int],
                debug: bool = False,
-               title: str = 'cropped', 
-               bb_mode: str = 'xyxy') -> np.ndarray:
+               title: str = 'cropped') -> np.ndarray:
     if len(image.shape) == 2:
         image = np.expand_dims(image, axis=-1)
-
-    if bb_mode == 'crop':
-        y0, y1, x0, x1 = bb_coordinates
-    else: 
-        x0, y0, x1, y1 = bb_coordinates
-
+    y0, y1, x0, x1 = bb_coordinates
     # make sure to convert the coordinates to 'int' if needed
     y0, y1, x0, x1 = int(y0), int(y1), int(x0), int(x1)
     cropped_image = image[y0: y1, x0: x1, :]
@@ -113,39 +106,6 @@ class YoloAnalyzer(object):
             
         return [signature(tres_obj) for tres_obj in tracking_results]
 
-    @classmethod
-    def _process_sort_output(cls, sort_output: np.ndarray) -> Tuple[List[int], List[List[Tuple[float]]], List[float]]:
-        """This accepts the tracker output for a single frame and return the frame signature:
-        3 lists: ([ids], [bounding boxes], [bounding box probability])
-
-        Args:
-            sort_output (np.ndarray): The output of the SORT tracking algorithm
-        """
-        def _process_single_output(sort_single: np.ndarray) -> Tuple[int, List[float], float]:
-            # this function will take the bounding box of a single 
-            # make sure the input is of the expected shape
-            if sort_single.shape != (6, ):
-                raise ValueError(f"This function expects a single bounding box. Found: {sort_single}")
-
-            # start with 'id', bounding box
-            return int(sort_single[-1]), sort_single[:-2].tolist(), sort_single[-2]
-
-        if sort_output.size == 0:
-            return [], [], []
-
-        if sort_output.ndim == 1:
-            sort_output = np.expand_dims(sort_output, axis=0)
-
-        if sort_output.shape[1] != 6:
-            # the output is expected to be numpy array representing the  of each object
-            # tracked in a grame
-            raise ValueError((f"The tracker's output is expected to be an array representing: bounding boxes, confidence, and id"
-                             f" for each frame."))
-    
-        ids, boxes, probs =  list(map(list, zip(*[_process_single_output(s) for s in sort_output])))             
-
-        return ids, boxes, probs
-
     def __init__(self,
                  top_persons_detected: int = 5,
                  top_faces_detected: int = 2,
@@ -164,7 +124,7 @@ class YoloAnalyzer(object):
         self.yolo = YOLO(yolo_path)
         # when passed in batch the Yolo.track function does is not persistent across the frames inside the batch
         # a custom tracker to solve this problem.
-        # self.tracker = CustomByteTracker(os.path.join(self._file_dir(), 'tracker.yaml'))
+        self.tracker = CustomByteTracker(os.path.join(self._file_dir(), 'tracker.yaml'))
         
         singleton = FR_SingletonInitializer()
         self.face_detector = singleton.get_face_detector()
@@ -185,64 +145,21 @@ class YoloAnalyzer(object):
             List[Results]: Each frame is associated with a Results object summarizing the frame's main results.
         """
 
-        tracker = Sort()
-        
-        # pass the frame to yolo
-        detection_results = self.yolo.predict(source=frames,
-                                              classes=[0],
-                                              device=self.device, 
-                                              show=False,
-                                              verbose=False, 
-                                              conf=0.4)
-        tracking_results = []
-
-        box_to_prob = {}
-
-        for res in detection_results:
-            # consider the case where there no boxes are detected
-            if res.boxes is None:
-                tracker_input =  np.empty((0, 5))
-            else:
-                boxes = res.boxes.xyxy.cpu().numpy()
-                probs = res.boxes.conf.cpu().numpy()
-                if probs.ndim == 1:
-                    probs = np.expand_dims(probs, axis=1)
-                # concatenate both of them
-                tracker_input = np.concatenate([boxes, probs], axis=1)
-            
-            # update the tracker
-            tracked_objs, org_boxes = tracker.update(tracker_input)
-
-            if len(tracked_objs) != len(org_boxes):
-                raise ValueError(f"Make sure to return the original boxes only for the tracked boxes")
-
-            # # it is important to keep in mind that the tracker does not return the probabilities
-            # box_to_prob.update({tuple(b.astype(np.int32).squeeze()): i for i, b in enumerate(boxes)})
-            
-            # # build the final tracking result object
-            # probs_tracked = np.asarray(
-            #                             [probs[box_to_prob[tuple(t_obj[:4].astype(np.int32))]] for t_obj in org_boxes]
-            #                         )
-            
-            # # expand the probabilities (if needed) to concatenate them with the tracking results 
-            # if probs_tracked.ndim == 1:
-            #     probs_tracked = np.expand_dims(probs_tracked, axis=1)
-            try:
-                boxes = np.concatenate([ob.reshape(1, -1) if ob.ndim == 1 else ob for ob in org_boxes])            
-                frame_signature = np.concatenate([boxes, tracked_objs[range(0, len(tracked_objs)), -1].reshape(-1, 1)], axis=1)
-                # add the probs to the tracking result
-                tracking_results.append(frame_signature)
-            except ValueError as e:
-                print(e)
-                tracking_results.append(np.empty((0, 6)))
-
+        tracking_results = self.yolo.track(source=frames,
+                            persist=True,
+                            classes=[0],  # only detect people in the image
+                            device=self.device,
+                            show=False, 
+                            tracker='bytetrack.yaml',
+                            verbose=False,)
+        # self.tracker.track modifies the results in place.
+        self.tracker.track(tracking_results)
         return tracking_results
 
 
     def _track(self, 
                frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
                frame_cuts: Dict[Union[str, int], int]) -> List[Results]:
-
         """This function tracks the different people detected across the given sequence of frames
 
         Args:
@@ -253,7 +170,6 @@ class YoloAnalyzer(object):
         """
         # initialize a dictionary that map the cut number of the frames belong to that cut.
         cut_frames = defaultdict(lambda : [])
-        
         if isinstance(frames, (np.ndarray, torch.Tensor)):
             for index, f in enumerate(frames):
                 cut_frames[frame_cuts[index]].append(f)
@@ -275,9 +191,7 @@ class YoloAnalyzer(object):
             # get the tracking results for the frames of a given cut.
             cut_track_results = self._track_single_cut(cf)
             # convert the results into frame signatures
-            # cut_fs = self.frame_signature(cut_track_results)
-            cut_fs = [self._process_sort_output(sort_output=cut_frame_res) for cut_frame_res in cut_track_results]
-
+            cut_fs = self.frame_signature(cut_track_results)
             # the final step is to add the value of the largest_id to each id in the frame signatures
             cut_fs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_fs]
             # extract the currently large id
@@ -291,56 +205,6 @@ class YoloAnalyzer(object):
                              f"frames {len(frames)}, signatures: {len(final_result)}"))
         
         return final_result
-
-
-    # def _track(self, 
-    #            frames: Sequence[Union[Path, str, np.ndarray, torch.Tensor]],
-    #            frame_cuts: Dict[Union[str, int], int]) -> List[Results]:
-    #     """This function tracks the different people detected across the given sequence of frames
-
-    #     Args:
-    #         frames (Sequence[Union[Path, str, np.ndarray, torch.Tensor]]): a sequence of frames. The assumption is
-    #         that frames are consecutive in time.
-    #     Returns:
-    #         List[Results]: a list of Yolo Results objects
-    #     """
-    #     # initialize a dictionary that map the cut number of the frames belong to that cut.
-    #     cut_frames = defaultdict(lambda : [])
-    #     if isinstance(frames, (np.ndarray, torch.Tensor)):
-    #         for index, f in enumerate(frames):
-    #             cut_frames[frame_cuts[index]].append(f)
-    #     else:
-    #         for f in frames:
-    #             cut_frames[frame_cuts[f]].append(f)
-        
-    #     # make sure the frames are sorted 
-    #     if list(cut_frames.keys()) != sorted(cut_frames.keys()):
-    #         raise ValueError(f"Make sure that the 'frames' are sorted chronologically") 
-
-    #     # NOTE: the self._track_single_cut method will return ids starting from '1'
-    #     # since this function is called for each cut, the ids will be repeated. Adding the largest id (so far)
-    #     # will ensure id uniqueness.
-    #     final_result = []
-    #     largest_id = 0
-
-    #     for cut_number, cf in cut_frames.items():
-    #         # get the tracking results for the frames of a given cut.
-    #         cut_track_results = self._track_single_cut(cf)
-    #         # convert the results into frame signatures
-    #         cut_fs = self.frame_signature(cut_track_results)
-    #         # the final step is to add the value of the largest_id to each id in the frame signatures
-    #         cut_fs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_fs]
-    #         # extract the currently large id
-    #         largest_id = max([max(s[0]) for s in cut_fs if len(s[0]) > 0]) # the condition is added since 'max' raise errors with empty lists.
-    #         # save the results
-    #         final_result.extend(cut_fs)
-
-    #     # before returning the results, a final safety check: The number of results matches that of the frames
-    #     if len(final_result) != len(frames):
-    #         raise ValueError((f"The number of final frame signatures do not match the number of passed frames.\n"
-    #                          f"frames {len(frames)}, signatures: {len(final_result)}"))
-        
-    #     return final_result
 
     def _identify(self, frame_signs: List[Tuple[List[float], List[int], List[float]]]) -> defaultdict[int: list]:
         """Given a the frame signatures, this function simply groups the 'ids' and selects the 
@@ -396,7 +260,7 @@ class YoloAnalyzer(object):
         self.face_detector.keep_all = False
 
         # the function crop_image will return a numpy array. The images will be of different dimensions.
-        id_cropped_images = dict([(person_id, [crop_image(frames[frame_index], bb, debug=debug, title=f'id: {person_id}, frame: {frame_index}', bb_mode='xyxy')
+        id_cropped_images = dict([(person_id, [crop_image(frames[frame_index], bb, debug=debug, title=f'id: {person_id}, frame: {frame_index}')
                                                for frame_index, bb, _ in person_info])
                                   for person_id, person_info in person_dict.items()])
         
