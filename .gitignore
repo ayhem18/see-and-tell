@@ -34,3 +34,4 @@ src/scene/autoencoders/autoencoders.ipynb
 *lightglue*
 test_env
 wandb
+src/visual_system/scene/autoencoders/ae_architecture.json

@@ -338,7 +338,8 @@ def sanity_check_model_selection(all_train_dir: Union[str, Path],
                                            run_name=run_name 
                                            ), 
                 count=15)
-
+    
+from configparser import ConfigParser
 
 if __name__ == '__main__':
     wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
@@ -346,14 +347,37 @@ if __name__ == '__main__':
     val_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene', 'unlabeled_data', 'val_extended')
     log_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
 
-    sanity_check_model_selection(all_train_dir=train_dir, 
-                                 all_val_dir=val_dir,
-                                 log_dir=log_dir, 
-                                 run_name='arch_selection')
+    # sanity_check_model_selection(all_train_dir=train_dir, 
+    #                              all_val_dir=val_dir,
+    #                              log_dir=log_dir, 
+    #                              run_name='arch_selection')
 
-    # train_ae(SceneDenoiseAE(), 
-    #          train_dir=os.path.join(Path(train_dir).parent, 'sanity_train'), 
-    #          val_dir=os.path.join(Path(val_dir).parent, 'sanity_val'),
-    #          log_dir=log_dir, 
-    #          num_epochs=1, 
-    #          )
+    # load the architecture with the highest capacity so far
+    config_path = os.path.join(SCRIPT_DIR, 'ae_architecture.ini')
+
+    if not os.path.exists(config_path):
+        raise ValueError(f"WHERE IS THE CONFIG FILE !!!!")
+
+    # parse the config file
+    cg = ConfigParser()
+    cg.read(config_path)
+    model_parameters = {k: float(v) for k, v in cg['architecture'].items()}
+
+    model = SceneDenoiseAE(**model_parameters)
+    
+
+
+    # with open(os.path.join(SCRIPT_DIR, 'ae_architecture.json')) as f: 
+    #     model_parameters = json.load(f)
+    # model_parameters = {k: float(v) for k, v in model_parameters['architecture']}
+    # # model_parameters = {k: float(v) for k, v in model_parameters.items()}
+
+    train_ae(model=model, 
+             train_dir=train_dir, 
+             val_dir=val_dir,
+             log_dir=log_dir, 
+             num_epochs=300,
+             run_name='auto_encoder_train',
+             add_augmentation=True
+             )
+

@@ -100,7 +100,9 @@ class ResNetFeatureExtractor(nn.Module):
             for p in self.feature_extractor.parameters():
                 p.requires_grad = False    
 
-        elif isinstance(freeze, int):
+        elif isinstance(freeze, (int, float)):
+            # it is possible to pass a integer with the float data type, so make sure to convert it into an integer
+            freeze = int(freeze)
             counter = 0
             for name, module in self.feature_extractor.named_children():
                 if 'layer' not in name or counter < freeze:
