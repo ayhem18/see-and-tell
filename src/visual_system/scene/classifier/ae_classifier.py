@@ -152,6 +152,7 @@ class SceneClassifier(L.LightningModule):
                 x: torch.Tensor, 
                 return_preds: bool = True) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         
+        x = x.to(pu.get_module_device(self))
         head_input = torch.squeeze(self.avgpool(self.encoder(x)))
         # first step is to get the model's output
         model_output = self.head(head_input)

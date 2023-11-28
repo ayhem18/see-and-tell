@@ -153,7 +153,7 @@ class SeeAndTell:
             frames=frames,
             frame_cuts=frame_cuts,
         )
-        
+        print([x.scene for x in seen])
         if segments is None:
             segments = self._get_segments(run_id, video)
         

@@ -19,7 +19,7 @@ from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weig
  
 # Bottleneck is the class that contains the Residual block
 from torchvision.models.resnet import Bottleneck
-
+import src.utilities.pytorch_utilities as pu
 
 LAYER_BLOCK = 'layer'
 RESIDUAL_BLOCK = 'residual'
