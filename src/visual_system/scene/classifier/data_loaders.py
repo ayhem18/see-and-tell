@@ -85,7 +85,7 @@ def create_dataloaders(
             shuffle=False,
             num_workers=num_workers,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
             collate_fn=collate_function_test
         )
 

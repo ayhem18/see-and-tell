@@ -253,8 +253,8 @@ class KeyPointClassifier:
         
         # initialize the extractor and the matcher
         
-        self.extractor = SuperPoint(max_num_keypoints=512).eval().to(self.device)  # load the extractor
-        self.matcher = LightGlue(features='superpoint', width_confidence=-1, filter_treshold=0.7).eval().to(self.device)
+        self.extractor = SuperPoint(max_num_keypoints=512).eval()#.to(self.device)  # load the extractor
+        self.matcher = LightGlue(features='superpoint', width_confidence=-1, filter_treshold=0.7).eval()#.to(self.device)
         self.references_threshold = referenes_threshold
 
         # let's save the feats of the reference images
@@ -268,6 +268,8 @@ class KeyPointClassifier:
 
     def classify(self, frames: List[str]) -> List[Optional[str]]:
         predictions = []
+        self.extractor = self.extractor.to(self.device)
+        self.matcher = self.matcher.to(self.device)
 
         for i in tqdm(range(0, len(frames), self.batch_size)):
             # create the data batch
@@ -308,7 +310,7 @@ class KeyPointClassifier:
             for frame_batch_index, frame_score_map in batch_classification_map.items():
                 label, label_score = max(list([(k, v) for k, v in frame_score_map.items()]), key=lambda x: (x[1]))                   
                 # make sure to set the predcitions to None if the maximum score is less thatn the threshold
-                batch_preds.append((label if label_score >= threshold else None))
+                batch_preds.append((label if label_score >= threshold else ""))
              
             predictions.extend(batch_preds)                
 
@@ -320,7 +322,7 @@ if __name__ == '__main__':
     classifier = KeyPointClassifier(references=os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene', 'cls_references'), 
                                     resize=(480, 480), batch_size=2)
 
-    data_path = os.path.join(PARENT_DIR, 'src', "visual_system/scene/labeled_data/Penny's apartment")
+    data_path = os.path.join(PARENT_DIR, 'src', "visual_system/scene/labeled_data/train/Penny's apartment")
     frames = [os.path.join(data_path, f) for f in os.listdir(data_path)]
     preds = classifier.classify(frames=frames)
 

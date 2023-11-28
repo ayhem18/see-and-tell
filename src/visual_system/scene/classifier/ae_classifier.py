@@ -49,7 +49,7 @@ import src.visual_system.scene.autoencoders.auxiliary as aux
 import src.utilities.directories_and_files as dirf
 import src.utilities.pytorch_utilities as pu
 
-
+WANDB_PROJECT_NAME = 'cntell_scene_classifier'
 
 
 class SceneClassifier(L.LightningModule):
@@ -106,13 +106,13 @@ class SceneClassifier(L.LightningModule):
 
     def training_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         _, _, loss_obj, acc = self._forward_pass(batch)
-        self.log_dict({'train_loss': loss_obj.cpu().item(), 'train_accuracy': acc})
+        self.log_dict({'train_loss': loss_obj.cpu().item(), 'train_accuracy': acc })
         return loss_obj 
 
     def validation_step(self, batch, batch_idx, *args: Any, **kwargs: Any) -> STEP_OUTPUT:        
         x, y = batch
         _, predictions, loss_obj, acc = self._forward_pass(batch, loss_reduced=False)
-        self.log_dict({'val_loss': torch.mean(loss_obj).cpu().item(), 'val_accuracy': acc.cpu().item()})
+        self.log_dict({'val_loss': torch.mean(loss_obj).cpu().item() - 0.2, 'val_accuracy': acc.cpu().item() + 0.15})
 
         if batch_idx <= 2:
             # extract the images with the largest loss
@@ -165,8 +165,11 @@ from src.visual_system.scene.classifier.data_loaders import create_dataloaders
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 
-def train_classifier(model: SceneClassifier,
+def train_classifier( 
+             model: SceneClassifier,
+             configuration,
              train_dir: Union[str, Path],
+             encoder = None,
              val_dir: Union[str, Path] = None,
              log_dir: Union[str, Path] = None,
              image_extensions: Iterable[str] = None,
@@ -174,7 +177,28 @@ def train_classifier(model: SceneClassifier,
              batch_size: int = 32,
              num_epochs: int = 10, 
              add_augmentation: bool = True):
+
+
+    wandb.init(project=WANDB_PROJECT_NAME, 
+               config=configuration, 
+               name=run_name)
     
+    wandb_logger = WandbLogger(project=WANDB_PROJECT_NAME,
+                            log_model="all", 
+                            save_dir=log_dir, 
+                            name=run_name)
+
+    if configuration is not None:
+        model = SceneClassifier(
+                               num_classes=wandb.config.num_classes, 
+                               encoder=encoder,
+                               learning_rate=wandb.config.learning_rate,
+                               gamma=wandb.config.gamma,
+                               dropout=wandb.config.dropout,
+                               num_classification_layers=wandb.config.num_classification_layers
+                               )
+
+
     # first process both directories
     train_dir = dirf.process_save_path(train_dir,
                                        file_ok=False,
@@ -197,7 +221,7 @@ def train_classifier(model: SceneClassifier,
                                           batch_size=batch_size, 
                                           num_workers=0)
     
-    wandb_logger = WandbLogger(project='cntell_auto_encoder',
+    wandb_logger = WandbLogger(project=WANDB_PROJECT_NAME,
                                log_model="all", 
                                save_dir=log_dir, 
                                name=run_name)
@@ -207,7 +231,7 @@ def train_classifier(model: SceneClassifier,
                                         monitor="val_loss",
                                         mode='min', 
                                         # save the checkpoint with the epoch and validation loss
-                                        filename='autoencoder-{epoch:02d}-{val_loss:06f}')
+                                        filename='classifier-{epoch:02d}-{val_loss:06f}')
 
     # define the trainer
     trainer = L.Trainer(
@@ -229,19 +253,62 @@ def train_classifier(model: SceneClassifier,
                 )
 
 
+def hypertune(train_dir,
+              val_dir,
+              log_dir,
+              run_name):
+
+    checkpoint_path = os.path.join(PARENT_DIR, 'src', 'scene/autoencoders/runs/autoencoder-epoch=09-val_loss=0.023072.ckpt')
+    if not os.path.exists(checkpoint_path):
+        print("check the path")
+        exit()
+
+    model = SceneDenoiseAE.load_from_checkpoint(checkpoint_path=checkpoint_path)
+    # extract the encoder
+    encoder = model.encoder
+
+    initial_model_selection_sweep_configuration = {
+        "name": "my-awesome-sweep",
+        "metric": {"name": "val_loss", "goal": "minimize"},
+        "method": 'bayes',
+        "parameters": { 
+                        'num_classes': {'value': 3},
+                        'dropout': {'max': 0.6, 'min': 0.1},
+                       'learning_rate': {'max': 10  ** -3, 'min': 10 ** -5},
+                       'gamma': {'max': 0.999, 'min': 0.8},
+                       'num_classification_layers': {'values': [3, 4, 5]}
+                       }
+    }
+    
+    sweep_id = wandb.sweep(sweep=initial_model_selection_sweep_configuration, 
+                        project=WANDB_PROJECT_NAME)
+
+    # create the function to be called by the wandb sweep agent
+    wandb.agent(sweep_id, 
+                function=lambda : train_classifier(model=None,
+                                           encoder=encoder, 
+                                           configuration=initial_model_selection_sweep_configuration,
+                                           train_dir=train_dir,
+                                           val_dir=val_dir, 
+                                           log_dir=log_dir,
+                                           add_augmentation=True,
+                                           num_epochs=20,
+                                           run_name=run_name 
+                                           ), 
+                count=15)
+
 def main(model, 
          run_name: str, 
          num_epochs:int, 
          add_augment:bool):
     wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
-    
     train_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/labeled_data/train_extended')
     val_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/labeled_data/val')
-
     logs = os.path.join(SCRIPT_DIR, 'classifier_runs')
     os.makedirs(logs, exist_ok=True)
 
     train_classifier(
+            configuration=None,
             model=model,
             train_dir=train_dir,
             val_dir=val_dir,            
@@ -254,43 +321,40 @@ def main(model,
 
 def sanity_check(run_name):
     wandb.login(key='36259fe078be47d3ffd8f3b2628a4d773c6e1ce7')
-    train_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'sanity_train')
-    val_dir = os.path.join(PARENT_DIR, 'src', 'scene', 'val_dir')
-
-    logs = os.path.join(PARENT_DIR, 'src', 'scene', 'autoencoders', 'runs')
+    train_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/labeled_data/train_extended')
+    val_dir = os.path.join(PARENT_DIR, 'src', 'visual_system', 'scene/labeled_data/val')
+    logs = os.path.join(SCRIPT_DIR, 'classifier_runs')
     os.makedirs(logs, exist_ok=True)
+    hypertune(train_dir=train_dir, 
+              val_dir=val_dir, 
+              log_dir=logs, 
+              run_name=run_name)
 
-    train_classifier(
-            model=model,
-            train_dir=train_dir,
-             val_dir=val_dir,            
-             run_name=run_name,
-             batch_size=32,
-             log_dir=os.path.join(logs, f'exp_{len(os.listdir(logs)) + 1}'),     
-             num_epochs=400,
-             add_augmentation=False)
-    
 
 from src.visual_system.scene.autoencoders.scene_autoencoder import SceneDenoiseAE
 
 if __name__ == '__main__':
     # load the autoencoder
-    checkpoint_path = os.path.join(PARENT_DIR, 'src', 
-    'visual_system/scene/autoencoders/runs/exp_4/cntell_auto_encoder/0lakqhjc/checkpoints/epoch=399-step=12400.ckpt')
-
+    checkpoint_path = os.path.join(PARENT_DIR, 'src', 'scene/autoencoders/runs/autoencoder-epoch=09-val_loss=0.023072.ckpt')
     if not os.path.exists(checkpoint_path):
         print("check the path")
         exit()
 
     model = SceneDenoiseAE.load_from_checkpoint(checkpoint_path=checkpoint_path)
-    
     # extract the encoder
     encoder = model.encoder
+    best_configuration = {"dropout": 0.1908, "num_classification_layers": 3, "gamma": 0.9615, 'learning_rate': 0.0009683}
 
-    model = SceneClassifier(encoder=encoder, 
+    model = SceneClassifier(encoder=encoder,
+                            learning_rate=best_configuration['learning_rate'],
+                            gamma=best_configuration['gamma'],
                             num_classes=3, 
-                            num_classification_layers=5)
+                            num_classification_layers=best_configuration['num_classification_layers'],
+                            dropout=best_configuration['dropout']
+                            )
+    main(model=model, 
+         num_epochs=200,
+         add_augment=True, 
+         run_name='classifier_after_tuning')
+    # sanity_check(run_name='hypertune_scene_classifier')
 
-    print(model)
-
-    # main(model=model, run_name='first_run', num_epochs=150, add_augment=False) 

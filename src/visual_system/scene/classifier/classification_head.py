@@ -40,7 +40,7 @@ class LinearBlock(nn.Module):
             activation_layer = self._ACTIVATION_MAP[activation]
             
             if dropout is not None:
-                components.extend([norm_layer, activation_layer, nn.Dropout(p=dropout, inplace=True)])
+                components.extend([norm_layer, activation_layer, nn.Dropout(p=dropout)])
             else:
                 components.extend([norm_layer, activation_layer])            
 
