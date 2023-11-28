@@ -60,7 +60,7 @@ class VisualSystem:
         
         self.face_extractor = FaceExtractor()
 
-        self.emotion_classifier = EmotionClassifier()
+#        self.emotion_classifier = EmotionClassifier()
         self.scene_classifier = SceneClassifier()
 
     def see(self,
@@ -78,42 +78,42 @@ class VisualSystem:
         emotions = []
 
         # the next step is to crop the images using the FaceExtractor class
-        for frame_index, (ids, boxes, _) in enumerate(frames_signatures):
-            if len(ids) == 0:
-                emotions.append([])        
-                continue
+        # for frame_index, (ids, boxes, _) in enumerate(frames_signatures):
+        #     if len(ids) == 0:
+        #         emotions.append([])        
+        #         continue
 
-            frame_np = cv.imread(frames[frame_index])
+        #     frame_np = cv.imread(frames[frame_index])
 
-            people = [crop_image(frame_np, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}, id: {i}') for 
-                        i, box in zip(ids, boxes)]
+        #     people = [crop_image(frame_np, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}, id: {i}') for 
+        #                 i, box in zip(ids, boxes)]
                                 
-            # keep_all=False since there should be only one face in a 'person bounding box' 
-            face_boxes, face_probs = self.face_extractor.extract_bboxes(images=people, keep_all=False, return_probs=True)
-            # certain person boxes will be assigned a None value (the model cannot detect face within the cropped bounding box)
+        #     # keep_all=False since there should be only one face in a 'person bounding box' 
+        #     face_boxes, face_probs = self.face_extractor.extract_bboxes(images=people, keep_all=False, return_probs=True)
+        #     # certain person boxes will be assigned a None value (the model cannot detect face within the cropped bounding box)
 
-            people_and_boxes =  [(im, [b[1], b[3], b[0], b[2]]) if (b is not None and p >= CONFIDENCE_THRESHOLD) else (None, None)
-                                 for b, p, im in zip(face_boxes, face_probs, people) ]
+        #     people_and_boxes =  [(im, [b[1], b[3], b[0], b[2]]) if (b is not None and p >= CONFIDENCE_THRESHOLD) else (None, None)
+        #                          for b, p, im in zip(face_boxes, face_probs, people) ]
 
-            face_indices = [i for i in range(len(people_and_boxes)) if people_and_boxes[i][0] is not None]
+        #     face_indices = [i for i in range(len(people_and_boxes)) if people_and_boxes[i][0] is not None]
 
-            faces = [crop_image(im, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}') for im, box in people_and_boxes if im is not None]
+        #     faces = [crop_image(im, bb_coordinates=box, debug=debug, title=f'frame: {frame_index}') for im, box in people_and_boxes if im is not None]
             
-            # now I need to append the None values 
-            temp_emotions = self.emotion_classifier.classify(faces)
-            frame_emotions = [None for _ in range(len(people))]
+        #     # now I need to append the None values 
+        #     temp_emotions = [None] * len(faces) # self.emotion_classifier.classify(faces)
+        #     frame_emotions = [None for _ in range(len(people))]
             
-            for i, e in enumerate(temp_emotions):
-                frame_emotions[face_indices[i]] = e 
+        #     for i, e in enumerate(temp_emotions):
+        #         frame_emotions[face_indices[i]] = e 
 
-            emotions.append(frame_emotions)
+        #     emotions.append(frame_emotions)
 
         scenes = self.scene_classifier.classify(frames)
-        
+        emotions = [None] * len(frames_signatures)
         assert len(scenes) == len(emotions) == len(characters) == len(frames_signatures), f"scenes: {len(scenes)}, emotions: {len(emotions)}, characters: {len(characters)}, signatures: {len(frames_signatures)}"
 
         # wrap up everything in a VisualFrame object. 
-        return [VisualFrame(characters=c, bboxes=fs[1], probs=fs[2], emotions=e, scene=s) for c, fs, e, s in zip(characters, frames_signatures, emotions, scenes)]
+        return [VisualFrame(characters=c, bboxes=fs[1], probs=fs[2], emotions=[None] * len(c), scene=s) for c, fs, e, s in zip(characters, frames_signatures, emotions, scenes)]
     
 
 TEMP2 = 1

@@ -199,8 +199,8 @@ def mix_video_and_audio(
 
     # Composite audio clip 
     output_audio_clip = CompositeAudioClip([output_audio_clip, output_audio_caption_clip])
-    output_audio_clip = output_audio_clip.set_duration(output_video_clip.duration)
+    output_audio_clip.duration = output_video_clip.duration
 
-    output_video_clip = output_video_clip.set_audio(output_audio_clip)
+    output_video_clip.audio = output_audio_clip
     # Write the output file
     output_video_clip.write_videofile(output_file, fps=input_video_clip.fps)

@@ -5,7 +5,7 @@ This script contains a number of functionalities used to process and work with v
 import os
 import shutil
 import cv2 as cv
-
+import re
 from typing import Union, Dict, Optional, List
 from pathlib import Path
 
@@ -96,13 +96,20 @@ def video_to_cuts(video_path: Union[str, Path],
                             video_name='temp_cut')
 
     frame_cut_map = {}
-
+    
+    files = {}
+    for file in os.listdir(video_dir):
+        if file.startswith('temp_cut'):
+            i = int(re.findall(r'\d+', file)[0])
+            files[i] = os.path.join(video_dir, file)
+            
+            
+            
     for i in range(1, num_cuts + 1):
         # convert the number to the format imposed by the detectscene library
-        index_str = f"{'0' * (1 + len(str(num_cuts)) - len(str(i)))}{str(i)} .mp4"
 
 
-        file_name = os.path.join(video_dir, f'temp_cut _ {index_str}')
+        file_name = files[i]
         cut_frames = video_to_frames(video_path=file_name, 
                                      output_dir=output_dir, 
                                      frame_stride=frame_stride, 
@@ -110,6 +117,13 @@ def video_to_cuts(video_path: Union[str, Path],
         for f in cut_frames:
             frame_cut_map[f] = i
         # delete the video after splitting it into cuts
-        os.remove(file_name)
+    for file in os.listdir(video_dir):
+        if file.startswith('temp_cut'):
+            try:
+                os.remove(os.path.join(video_dir, file))
+            except Exception:
+                pass
+
+        # os.remove(file_name)
 
     return frame_cut_map

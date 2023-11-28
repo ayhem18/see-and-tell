@@ -10,15 +10,21 @@ Process an input video in the following way:
 6) Combines audios and video into a single file
 """
 
+import asyncio
 import os
 import time
 import uuid
+import cv2
 import torch
 import hashlib
+
+from .gpt.words import get_substitutions
+from .gpt.captions import rewrite_with_llm
 
 from . import utils
 from .face.who import FaceRecognizer
 from .say.caption import SpeechToText
+from .captions.attention import CaptionAttentionSystem
 from .listen.speech import SpeechDetector
 from .describe.frame import FrameDescriptor, CaptionOutput
 from .visual_system.face import video_utilities as vu
@@ -41,13 +47,23 @@ class SeeAndTell:
         self.use_embeddings = embeddings_folder is not None
         self.embeddings_folder = embeddings_folder
         self.describer = FrameDescriptor(
-            model_name="microsoft/git-base",
-            use_gpu=torch.cuda.is_available(),
+            model_name="microsoft/git-large-textcaps",
+            use_gpu=True,
         ) 
-        self.face_detector = FaceRecognizer()
+        
+        
+        self.cas = CaptionAttentionSystem(
+            self.describer.git_vision_config.patch_size,
+            self.describer.git_config.num_attention_heads,
+            self.describer.git_config.num_hidden_layers,
+            self.describer.git_vision_config.image_size,
+        )
 
-        if embeddings_folder:
-            self.face_detector.load_series_embeddings(embeddings_folder)
+            
+        # self.face_detector = FaceRecognizer()
+
+        # if embeddings_folder:
+        #     self.face_detector.load_series_embeddings(embeddings_folder)
 
         self.temp_folder = temp_folder
         os.makedirs(self.temp_folder, exist_ok=True)
@@ -99,6 +115,8 @@ class SeeAndTell:
     
     def _get_segments(self, run_id: str, video: str) -> list[tuple[int, int]]:
         """Get segments with no speech."""
+        if not os.path.exists(self.__get_audio(run_id)):
+            self._split_on_audio(video, run_id)
         segments = self.speech_detector(self.__get_audio(run_id))
         segments = utils.get_frames_with_no_speech(
             segments, utils.get_length_of_video(video)
@@ -107,12 +125,12 @@ class SeeAndTell:
         segments.sort(key=lambda x: x[0])
         return segments
     
-    def _get_descriptions(self, run_id: str, frames: str) -> list[CaptionOutput]:
+    def _get_descriptions(self, run_id: str, frames: list[str]) -> list[CaptionOutput]:
         """Get descriptions for frames."""
-        return self.describer(frames)
+        return self.describer.describe_batch(frames)
         
     
-    def describe_video(self, video: str, save_to: str, from_series: str = None) -> None:
+    def describe_video(self, video: str, save_to: str, from_series: str = None, segments=None) -> None:
         # Step 0: Generate a hash for video name
         # and current time to ensure unique folder name
 
@@ -120,8 +138,10 @@ class SeeAndTell:
         
         frame_cuts = self._split_on_cuts(video, run_id)
         frames = [*frame_cuts.keys()]
-        audio = self._split_on_audio(video, run_id)
-        segments = self._get_segments(run_id, video)
+        
+        height, width = cv2.imread(frames[0]).shape[:2]
+        # audio = self._split_on_audio(video, run_id)
+        # segments = self._get_segments(run_id, video)
         
         vs = VisualSystem(
             reference_embeddings=os.path.join(
@@ -134,52 +154,69 @@ class SeeAndTell:
             frame_cuts=frame_cuts,
         )
         
-        descriptions = ...
-
-
-        # Step 3: Get descriptions for each segment
-        descriptions = {}
-        for frame in frames:
-            descriptions[frame] = (
-                run_descriptor(frame)
+        if segments is None:
+            segments = self._get_segments(run_id, video)
+        
+        
+        frames_to_proceed = []
+        for start, end in segments:
+            lst = [(ind, vf,) for ind, vf in enumerate(seen) if start <= ind <= end]
+            if not lst:
+                continue
+            most_described_frame = max(
+                lst,
+                key=lambda x: len(x[1].characters)
             )
-        descriptions = {i: d.lower() for i, d in descriptions.items()}
-
-        if self.use_embeddings:
-            # Step 4: Recognize faces in each segment
-            desc_with_faces = []
-            desc_with_faces, desc_indices, detections = self.face_detector(
-                list(descriptions.keys()),
-                list(descriptions.values()),
-                from_series
-            )
-
-          # Step 4.1: Get the most described frame for each segment
-            frames_to_proceed = []
-            for start, end in segments:
-                most_described_frame = max(
-                    [(ind, detections[i]) for i, ind in enumerate(
-                        desc_indices) if start <= ind <= end],
-                    key=lambda x: len(x[1])
-                )
+            # Forgive me lord, but I have to do this
+            # as the first frame could not be described
+            if most_described_frame[0] == 0:
+                frames_to_proceed.append(most_described_frame[0] + 1)
+            else:
                 frames_to_proceed.append(most_described_frame[0])
-
-            # Step 4.2: Enhance descriptions for each segment
-            descriptions = [
-                desc_with_faces[desc_indices.index(i)] for i in frames_to_proceed]
-
-        else:
-            frames_to_proceed = [int(s[0]) for s in segments]
-            descriptions = list(descriptions.values())
-            descriptions = [descriptions[i] for i in frames_to_proceed]
-
-        print(frames_to_proceed, descriptions)
-        print(desc_indices)
-
+        
+        frames = [frames[i] for i in frames_to_proceed]
+        
+        outputs = self._get_descriptions(run_id, frames)
+        descriptions = [output.caption_tokens for output in outputs]
+        subs =  asyncio.run(
+            get_substitutions([x.caption_tokens for x in outputs]),
+        ) 
+        
+        subs = [[y.split() for y in x.words] for x in subs]
+        
+        for i, output in enumerate(outputs):
+            matches = self.cas.match(
+                output=output, 
+                words=output.caption_tokens, 
+                phrases=subs[i],
+                boxes=seen[frames_to_proceed[i]].bboxes,
+                height=height,
+                width=width,
+            )
+            for (left, right), j, _ in matches:
+                person = seen[frames_to_proceed[i]].characters[j]
+                for k in range(left, right):
+                    descriptions[i][k] = f'<{person.title()}>'
+        
+        text_descriptions: list[str] = []
+        for i in range(len(descriptions)):
+            # Remove repeating words in descriptions
+            for j in range(len(descriptions[i]) - 1):
+                if descriptions[i][j] == descriptions[i][j + 1]:
+                    descriptions[i][j] = ''
+            text_descriptions.append(' '.join(descriptions[i]))
+            
+            
+        final_descriptions = asyncio.run(rewrite_with_llm(
+            text_descriptions,
+            [seen[i].scene for i in frames_to_proceed],
+        ))
+        
+        print([x.caption for x in final_descriptions])
         # Step 5: Generate audio for each description
         audio_arrays = []
-        for description in descriptions:
-            audio_array = self.speech_to_text(description)
+        for description in final_descriptions:
+            audio_array = self.speech_to_text(description.caption)
             audio_arrays.append(audio_array)
 
         # Step 6: Combine clips

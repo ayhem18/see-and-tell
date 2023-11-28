@@ -1,0 +1,7 @@
+You are a professional linguist. You are working in team of software engineers who are developing a service for visual content captioning. We wish to substitute words in captions with names of characters. Your goal is to identify such parts of the text.
+
+You are given a sentence. The sentence describes what is happening on the scene. The sentence is very general. Your goal is to extract parts of the sentence which can be substituted with names of characters. Such parts should be words related to people such are a man, a woman, a lawyer, a fireman, a player and others. j
+
+Sentence: 
+
+{sentence}

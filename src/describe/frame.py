@@ -54,16 +54,19 @@ class CaptionOutput(BaseModel):
         if len_attentions <= id_:
             raise ValueError(f"word id is out of bounds {id_} >= {len_attentions}")
 
+        x = None
         if head is not None and layer is not None:
-            return self.attentions_[id_][layer][head]
+            x = self.attentions_[id_][layer][head]
 
         if head is not None:
-            return self.attentions_[id_][:, head, :].mean(dim=0)
+            x = self.attentions_[id_][:, head, :].mean(dim=0)
         if layer is not None:
-            return self.attentions_[id_][layer, :].mean(dim=0)
+            x = self.attentions_[id_][layer, :].mean(dim=0)
 
-        return self.attentions_[id_].mean(dim=0).mean(dim=0)
+        if x is not None:
+            x = self.attentions_[id_].mean(dim=0).mean(dim=0)
 
+        return x
 
 
 class FrameDescriptorConfiguration(BaseModel):
@@ -90,6 +93,16 @@ class FrameDescriptorConfiguration(BaseModel):
         # Override the default generation config
         self.generation_config.return_dict_in_generate = True
         self.generation_config.output_attentions = True
+        # self.generation_config.num_beams = 6
+        # self.generation_config.max_length = 26
+        # self.generation_config.no_repeat_ngram_size = 2
+        # self.generation_config.early_stopping = True
+        # self.generation_config.length_penalty = 2.0
+        # self.generation_config.num_return_sequences = 1
+        # self.generation_config.top_k = 50
+        # self.generation_config.top_p = 0.95
+        # self.generation_config.temperature = 0.9
+        # self.generation_config.do_sample = True
 
 
 class FrameDescriptor:

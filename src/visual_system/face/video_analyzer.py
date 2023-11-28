@@ -16,7 +16,7 @@ from PIL import Image
 
 # from src.face.custom_tracker import CustomByteTracker
 from src.visual_system.tracking.sort import Sort, convert_x_to_bbox
-from face.utilities import FR_SingletonInitializer
+from .utilities import FR_SingletonInitializer
 
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -281,7 +281,9 @@ class YoloAnalyzer(object):
             # the final step is to add the value of the largest_id to each id in the frame signatures
             cut_fs = [([i + largest_id for i in ids], b, p) for ids, b, p in cut_fs]
             # extract the currently large id
-            largest_id = max([max(s[0]) for s in cut_fs if len(s[0]) > 0]) # the condition is added since 'max' raise errors with empty lists.
+            seq = [max(s[0]) for s in cut_fs if len(s[0]) > 0]
+            if len(seq) != 0:
+                largest_id = max(seq) # the condition is added since 'max' raise errors with empty lists.
             # save the results
             final_result.extend(cut_fs)
 
